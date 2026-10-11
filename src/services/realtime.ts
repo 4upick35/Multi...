@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // Realtime (WebSocket / Centrifugo): подключение к realtime-каналу портала.
 //
 // Строго read-only: здесь только подключение, подписка и приём публикаций.
@@ -100,6 +100,8 @@ interface RealtimeEntry {
   startedAt: number;
   /** Момент последнего перезапуска сторожем (0 — ещё не перезапускалось). */
   lastRestartAt: number;
+  /** Момент последнего входящего события realtime на этом соединении (pub/publication). */
+  lastActivityAt: number;
 }
 
 const entries = new Map<string, RealtimeEntry>();
@@ -130,6 +132,15 @@ export const REALTIME_TICK_HEALTH_MIN_GAP_MS = 10000;
  * в фоне JS-setInterval заморожен, поэтому пульс пишем от нативного тикера.
  */
 export const REALTIME_HEARTBEAT_MIN_GAP_MS = 60000;
+
+/**
+ * Порог тишины входящих событий realtime: если subscribed-соединение дольше
+ * этого времени не получало ни одного входящего события (pub/publication/message),
+ * оно считается молчащим и подлежит перезапуску сторожем (reason=silent).
+ * Страховка от «тихо умерших» в фоне сокeтов, у которых нативный тикер
+ * не видит событий, но состояние остаётся 'subscribed'.
+ */
+export const REALTIME_SILENCE_MS = 10 * 60 * 1000;
 
 /** Таймер сторожа: создаётся лениво при первом соединении, чистится при последнем. */
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
@@ -182,7 +193,18 @@ export function isRealtimeRunning(accountId: string): boolean {
  */
 export function isRealtimeSubscribed(accountId: string): boolean {
   const entry = entries.get(accountId);
-  return entry !== undefined && entry.state === 'subscribed';
+  if (entry === undefined) {
+    return false;
+  }
+  if (entry.state !== 'subscribed') {
+    return false;
+  }
+  // Молчащее subscribed-соединение не считается активным: пока тишина держится,
+  // включается страховочный опрос; сокет пересоздаётся при возврате из фона.
+  if (Date.now() - entry.lastActivityAt > REALTIME_SILENCE_MS) {
+    return false;
+  }
+  return true;
 }
 
 /** Число активных соединений (диагностика/тесты). */
@@ -276,6 +298,7 @@ export function startRealtime(account: ElmaAccount): void {
     subscribedChannels: new Set<string>(),
     startedAt: Date.now(),
     lastRestartAt: 0,
+    lastActivityAt: Date.now(),
   };
   entries.set(account.id, entry);
   wireClient(entry);
@@ -865,6 +888,10 @@ function watchdogTick(): void {
 /**
  * Причина перезапуска соединения сторожем: closed → stale → age, иначе null.
  * `stale` лечит застрявшие connecting/connected (не дошедшие до subscribed).
+ * Молчащий subscribed здесь намеренно не перезапускается: чтобы не было лишних
+ * переподключений в «тихие» периоды портала; сам факт тишины обрабатывается в
+ * isRealtimeSubscribed (включает страховочный опрос) и в ensureRealtimeAlive
+ * при возврате из фона.
  */
 function watchdogRestartReason(
   entry: RealtimeEntry,
@@ -910,6 +937,12 @@ function restartByWatchdog(entry: RealtimeEntry, reason: string, now: number): v
  * застрявшие connecting/connected) — вызывается при возврате приложения из
  * фона и с нативного тика сторожа (в фоне JS-таймеры заморожены).
  *
+ * Молчащее subscribed-соединение (lastActivityAt тише REALTIME_SILENCE_MS)
+ * считается нездоровым только при force (возврат из фона): его сокет
+ * пересоздаётся немедленно. В фоне такие соединения не перезапускаются —
+ * достаточно того, что isRealtimeSubscribed для них возвращает false и
+ * включается страховочный опрос (уведомления продолжают приходить).
+ *
  * @param force true — принудительно, игнорируя REALTIME_RESTART_MIN_GAP_MS
  *   (возврат из фона: сокет обязан пересоздаться); false — мин-gap соблюдается.
  * Причина в логе: `resume` при force, `stale` — в остальных случаях.
@@ -918,6 +951,9 @@ export function ensureRealtimeAlive(force = false): void {
   const now = Date.now();
   for (const entry of Array.from(entries.values())) {
     if (entry.state === 'subscribed') {
+      if (force && now - entry.lastActivityAt > REALTIME_SILENCE_MS) {
+        restartByWatchdog(entry, 'resume', now);
+      }
       continue;
     }
     if (!force && now - entry.lastRestartAt < REALTIME_RESTART_MIN_GAP_MS) {
@@ -988,6 +1024,7 @@ function wireClient(entry: RealtimeEntry): void {
 
   // Async-сообщения сервера, не привязанные к каналу — тоже входящие события.
   client.on('message', ctx => {
+    entry.lastActivityAt = Date.now();
     lastRealtimeEventAt = Date.now();
     let event = '';
     try {
@@ -1037,6 +1074,7 @@ function subscribeChannels(entry: RealtimeEntry, company: string, userID: string
       sub.on('publication', ctx => logPublication(entry, channel, ctx.data));
       sub.on('subscribed', () => {
         entry.subscribedChannels.add(channel);
+        entry.lastActivityAt = Date.now();
         const allSubscribed =
           entry.channels.size > 0 && entry.subscribedChannels.size >= entry.channels.size;
         if (allSubscribed && entry.state !== 'closed') {
@@ -1070,6 +1108,7 @@ const COUNTERS_EVENT_PREFIX = 'updatecounters';
 
 /** Лог любой входящей публикации + диспетчер уведомлений/обновлений. */
 function logPublication(entry: RealtimeEntry, channel: string, data: unknown): void {
+  entry.lastActivityAt = Date.now();
   lastRealtimeEventAt = Date.now();
   let event = '';
   try {

@@ -160,6 +160,8 @@ import {
   REALTIME_MAX_CONNECTION_AGE_MS,
   REALTIME_STALE_MS,
   REALTIME_TICK_HEALTH_MIN_GAP_MS,
+  REALTIME_SILENCE_MS,
+  isRealtimeSubscribed,
   startRealtime,
   stopRealtime,
   stopAllRealtime,
@@ -1260,6 +1262,94 @@ describe('сторож realtime', () => {
     expect(() => ensureRealtimeAlive()).not.toThrow();
     expect(realtimeConnectionsCount()).toBe(0);
     expect(instances).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// «Зомби-подписка»: TCP-сокет Centrifugo умирает молча — ни disconnected, ни
+// error не приходит, state остаётся subscribed, и в пуш-режиме страховочный
+// опрос никогда не включается. Спасает учёт lastActivityAt: молчащее
+// соединение перестаёт считаться подписанным.
+// ---------------------------------------------------------------------------
+
+describe('молчащая (зомби) подписка realtime', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('свежая подписка считается активной', () => {
+    const client = startConnected(makeAccount({id: 'acc-fresh'}));
+    markSubscribed(client);
+
+    expect(isRealtimeSubscribed('acc-fresh')).toBe(true);
+  });
+
+  it('без соединения учётки подписки нет', () => {
+    expect(isRealtimeSubscribed('acc-unknown')).toBe(false);
+  });
+
+  it('после тишины дольше REALTIME_SILENCE_MS подписка считается мёртвой', () => {
+    jest.useFakeTimers();
+    const client = startConnected(makeAccount({id: 'acc-silent'}));
+    markSubscribed(client);
+    expect(isRealtimeSubscribed('acc-silent')).toBe(true);
+
+    jest.advanceTimersByTime(REALTIME_SILENCE_MS + 1000);
+
+    expect(isRealtimeSubscribed('acc-silent')).toBe(false);
+    expect(instances).toHaveLength(1); // в фоне сокет сам не пересоздаётся
+  });
+
+  it('входящая публикация вновь делает подписку активной', () => {
+    jest.useFakeTimers();
+    const client = startConnected(makeAccount({id: 'acc-revive'}));
+    markSubscribed(client);
+
+    jest.advanceTimersByTime(REALTIME_SILENCE_MS + 1000);
+    expect(isRealtimeSubscribed('acc-revive')).toBe(false);
+
+    publish(client, FEED_MESSAGE);
+
+    expect(isRealtimeSubscribed('acc-revive')).toBe(true);
+  });
+
+  it('ensureRealtimeAlive(false) молчащую подписку не трогает (фон)', () => {
+    jest.useFakeTimers();
+    const client = startConnected(makeAccount({id: 'acc-bg'}));
+    markSubscribed(client);
+    jest.advanceTimersByTime(REALTIME_SILENCE_MS + 1000);
+    mockedLogDiag.mockClear();
+
+    ensureRealtimeAlive(false);
+
+    expect(instances).toHaveLength(1);
+    expect(instances[0].disconnectCalled).toBe(false);
+    expect(watchdogRestarts()).toHaveLength(0);
+  });
+
+  it('ensureRealtimeAlive(true) перезапускает молчащую подписку (возврат из фона)', () => {
+    jest.useFakeTimers();
+    const client = startConnected(makeAccount({id: 'acc-resume'}));
+    markSubscribed(client);
+    jest.advanceTimersByTime(REALTIME_SILENCE_MS + 1000);
+    mockedLogDiag.mockClear();
+
+    ensureRealtimeAlive(true);
+
+    expect(instances).toHaveLength(2);
+    expect(instances[0].disconnectCalled).toBe(true);
+    expect(watchdogRestarts('resume')).toHaveLength(1);
+  });
+
+  it('ensureRealtimeAlive(true) свежую подписку не трогает', () => {
+    const client = startConnected(makeAccount({id: 'acc-recent'}));
+    markSubscribed(client); // lastActivityAt = сейчас
+
+    ensureRealtimeAlive(true);
+
+    expect(instances).toHaveLength(1);
+    expect(instances[0].disconnectCalled).toBe(false);
+    expect(watchdogRestarts()).toHaveLength(0);
   });
 });
 

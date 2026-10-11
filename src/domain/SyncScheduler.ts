@@ -2,6 +2,11 @@
 // SyncScheduler — доменный планировщик синхронизации задач.
 // Инкапсулирует логику поллинга: jitter, backoff, debounce, подписки.
 // Зависит от инжектированных интерфейсов — НЕ от zustand-сторов напрямую.
+//
+// Очерёдность следующего цикла держится на двух источниках: JS-таймер
+// (отзывчив в foreground) и нативный тик SYNC_TICK_EVENT (в фоне JS-таймеры
+// заморожены, а нативный тикер продолжает идти). Оба пути сходятся в tick()
+// с проверкой due-времени и защитой от повторного запуска — опрос не дублируется.
 // ---------------------------------------------------------------------------
 
 import {ElmaAccount} from '../types/account';
@@ -12,6 +17,12 @@ import {
   POLL_JITTER_MAX,
 } from '../config/constants';
 import {nextAccountGapMs} from '../utils/poll-interval';
+
+/** Как часто перепроверяем снятие паузы синхронизации. */
+const PAUSE_RECHECK_MS = 5_000;
+
+/** Debounce перезапуска цикла при смене аккаунтов/настроек. */
+const CHANGE_DEBOUNCE_MS = 800;
 
 // ---------------------------------------------------------------------------
 // Локальный тип результата (без импорта task-service)
@@ -41,6 +52,10 @@ export interface SyncSchedulerDeps {
   subscribeAuth: (callback: (accounts: ElmaAccount[]) => void) => () => void;
   /** Подписка на изменения settings-store (возвращает отписку) */
   subscribeSettings: (callback: () => void) => () => void;
+  /** Подписка на нативный тик синхронизации (возвращает отписку) */
+  subscribeTick: (callback: () => void) => () => void;
+  /** Фоновый sleep (нативный), не зависящий от JS-таймеров */
+  delayMs: (ms: number) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,11 +73,13 @@ export interface SyncSchedulerDeps {
  * zustand-сторов или task-service в классе НЕТ.
  */
 export class SyncScheduler {
-  // Приватные поля для таймеров и подписок
   private timerId: ReturnType<typeof setTimeout> | null = null;
   private running = false;
+  private polling = false;
+  private nextDueAt = 0;
   private unsubAuth: (() => void) | null = null;
   private unsubSettings: (() => void) | null = null;
+  private unsubTick: (() => void) | null = null;
   private debounceId: ReturnType<typeof setTimeout> | null = null;
   private accountsSnapshot: ElmaAccount[] = [];
 
@@ -77,8 +94,8 @@ export class SyncScheduler {
       return;
     }
     this.running = true;
+    this.nextDueAt = 0;
 
-    // Подписка на список аккаунтов
     this.accountsSnapshot = [...this.deps.getAccounts()];
     this.unsubAuth = this.deps.subscribeAuth((accounts) => {
       const prev = this.accountsSnapshot;
@@ -86,38 +103,25 @@ export class SyncScheduler {
       this.onAccountsChanged(this.accountsSnapshot, prev);
     });
 
-    // Подписка на изменения настроек (перезапуск цикла с новым интервалом)
+    // Смена настроек: интервал подхватится при следующем планировании,
+    // поэтому достаточно перезапустить цикл debounce-триггером.
     this.unsubSettings = this.deps.subscribeSettings(() => {
-      if (this.running && this.timerId) {
-        clearTimeout(this.timerId);
-        this.timerId = null;
+      if (this.running && !this.polling) {
         this.debouncedTrigger();
       }
     });
 
-    // Немедленный поллинг (пропускаем при паузе)
-    if (this.deps.isSyncPaused()) {
-      this.scheduleNext();
-      return;
-    }
-    const accounts = this.deps.getAccounts();
-    if (accounts.length > 0) {
-      this.pollOnce(accounts).finally(() => {
-        if (this.running) {
-          this.scheduleNext();
-        }
-      });
-    } else {
-      this.scheduleNext();
-    }
+    // Нативный тик: в фоне JS-таймеры заморожены, а тикер продолжает идти —
+    // он и доводит просроченный цикл до запуска.
+    this.unsubTick = this.deps.subscribeTick(() => this.tick());
+
+    this.tick();
   }
 
   stop(): void {
     this.running = false;
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
-    }
+    this.polling = false;
+    this.clearTimer();
     if (this.debounceId) {
       clearTimeout(this.debounceId);
       this.debounceId = null;
@@ -130,30 +134,61 @@ export class SyncScheduler {
       this.unsubSettings();
       this.unsubSettings = null;
     }
+    if (this.unsubTick) {
+      this.unsubTick();
+      this.unsubTick = null;
+    }
     this.accountsSnapshot = [];
+    this.nextDueAt = 0;
   }
 
   triggerNow(): void {
     if (!this.running) {
       return;
     }
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
+    this.clearTimer();
+    if (this.deps.getAccounts().length === 0) {
+      return;
     }
-    const accounts = this.deps.getAccounts();
-    if (accounts.length > 0) {
-      this.pollOnce(accounts, true).finally(() => {
-        if (this.running) {
-          this.scheduleNext();
-        }
-      });
-    }
+    void this.runDue(true);
   }
 
   // -----------------------------------------------------------------------
   // Приватные методы
   // -----------------------------------------------------------------------
+
+  /** Запустить цикл, если он просрочен. Вызывается JS-таймером и нативным тиком. */
+  private tick(): void {
+    if (!this.running || this.polling) {
+      return;
+    }
+    if (Date.now() < this.nextDueAt) {
+      return;
+    }
+    void this.runDue();
+  }
+
+  /** Один прогон цикла с защитой от повторного входа. */
+  private async runDue(immediate = false): Promise<void> {
+    if (!this.running || this.polling) {
+      return;
+    }
+    this.polling = true;
+    this.clearTimer();
+    try {
+      if (!this.deps.isSyncPaused()) {
+        const accounts = this.deps.getAccounts();
+        if (accounts.length > 0) {
+          await this.pollOnce(accounts, immediate);
+        }
+      }
+    } finally {
+      this.polling = false;
+      if (this.running) {
+        this.scheduleNext();
+      }
+    }
+  }
 
   /**
    * Jitter — случайное число 0–10_000 мс (идентично оригиналу).
@@ -233,8 +268,7 @@ export class SyncScheduler {
     for (let i = 0; i < accounts.length; i++) {
       if (i > 0) {
         // Разнос между стартами обновления разных учёток
-        const gap = nextAccountGapMs();
-        await new Promise<void>((resolve) => setTimeout(resolve, gap));
+        await this.deps.delayMs(nextAccountGapMs());
       }
 
       await this.refreshAccountIfDue(accounts[i], intervalMs, syncStates);
@@ -242,37 +276,26 @@ export class SyncScheduler {
   }
 
   /**
-   * Планирование следующего цикла поллинга.
+   * Запланировать следующий цикл: JS-таймер (foreground) + due-время для
+   * нативного тика (фон). На паузе — короткая перепроверка снятия паузы.
    */
   private scheduleNext(): void {
     if (!this.running) {
       return;
     }
-    if (this.deps.isSyncPaused()) {
-      // При паузе — проверяем каждые 5 сек, не сняли ли паузу
-      this.timerId = setTimeout(() => {
-        this.timerId = null;
-        if (this.running) {
-          this.scheduleNext();
-        }
-      }, 5_000);
-      return;
-    }
-    const intervalMs = this.randomIntervalMs();
-    this.timerId = setTimeout(async () => {
-      if (!this.running) {
-        return;
-      }
-      const accounts = this.deps.getAccounts();
-      if (accounts.length > 0) {
-        await this.pollOnce(accounts);
-      }
-      this.scheduleNext();
-    }, intervalMs);
+    this.clearTimer();
+    const now = Date.now();
+    this.nextDueAt = this.deps.isSyncPaused()
+      ? now + PAUSE_RECHECK_MS
+      : now + this.randomIntervalMs();
+    this.timerId = setTimeout(() => {
+      this.timerId = null;
+      this.tick();
+    }, Math.max(0, this.nextDueAt - now));
   }
 
   /**
-   * Debounce-триггер (при смене списка аккаунтов, 800мс).
+   * Debounce-триггер (при смене списка аккаунтов/настроек).
    */
   private debouncedTrigger(): void {
     if (this.debounceId) {
@@ -283,19 +306,20 @@ export class SyncScheduler {
       if (!this.running) {
         return;
       }
-      if (this.timerId) {
-        clearTimeout(this.timerId);
-        this.timerId = null;
+      this.clearTimer();
+      if (this.deps.getAccounts().length > 0) {
+        void this.runDue();
+      } else {
+        this.scheduleNext();
       }
-      const accounts = this.deps.getAccounts();
-      if (accounts.length > 0) {
-        this.pollOnce(accounts).finally(() => {
-          if (this.running) {
-            this.scheduleNext();
-          }
-        });
-      }
-    }, 800);
+    }, CHANGE_DEBOUNCE_MS);
+  }
+
+  private clearTimer(): void {
+    if (this.timerId) {
+      clearTimeout(this.timerId);
+      this.timerId = null;
+    }
   }
 
   /**

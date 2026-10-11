@@ -4,10 +4,12 @@
 // ---------------------------------------------------------------------------
 
 import {ElmaAccount} from '../types/account';
+import {DeviceEventEmitter} from 'react-native';
 import {useAuthStore} from '../store/auth-store';
 import {useSettingsStore} from '../store/settings-store';
 import {refreshAccountTasks} from './task-service';
 import {SyncScheduler} from '../domain/SyncScheduler';
+import {SYNC_TICK_EVENT, delay} from '../native/KeepAlive';
 import * as TasksStore from '../store/tasks-store';
 
 // ---------------------------------------------------------------------------
@@ -47,6 +49,11 @@ const syncScheduler = new SyncScheduler({
     }),
   subscribeSettings: (callback: () => void) =>
     useSettingsStore.subscribe(callback),
+  subscribeTick: (callback: () => void) => {
+    const sub = DeviceEventEmitter.addListener(SYNC_TICK_EVENT, callback);
+    return () => sub.remove();
+  },
+  delayMs: delay,
 });
 
 // ---------------------------------------------------------------------------
