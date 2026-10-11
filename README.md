@@ -83,7 +83,6 @@ JAVA_HOME="путь/к/jdk-17" ./gradlew assembleRelease
 |--------|----------|
 | `npm start` | Запуск Metro bundler |
 | `npm run android` | Сборка и запуск на Android |
-| `npm run ios` | Сборка и запуск на iOS |
 | `npm run lint` | Проверка ESLint |
 | `npm test` | Запуск тестов (Jest) |
 | `npm run audit` | Проверка зависимостей на уязвимости |
