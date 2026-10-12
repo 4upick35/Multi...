@@ -200,7 +200,8 @@ export function isRealtimeSubscribed(accountId: string): boolean {
     return false;
   }
   // Молчащее subscribed-соединение не считается активным: пока тишина держится,
-  // включается страховочный опрос; сокет пересоздаётся при возврате из фона.
+  // включается страховочный опрос; сокет пересоздаётся сторожем (нативный тик
+  // в фоне, возврат из фона).
   if (Date.now() - entry.lastActivityAt > REALTIME_SILENCE_MS) {
     return false;
   }
@@ -886,17 +887,17 @@ function watchdogTick(): void {
 }
 
 /**
- * Причина перезапуска соединения сторожем: closed → stale → age, иначе null.
+ * Причина перезапуска соединения сторожем: closed → stale → age → silent,
+ * иначе null.
  * `stale` лечит застрявшие connecting/connected (не дошедшие до subscribed).
- * Молчащий subscribed здесь намеренно не перезапускается: чтобы не было лишних
- * переподключений в «тихие» периоды портала; сам факт тишины обрабатывается в
- * isRealtimeSubscribed (включает страховочный опрос) и в ensureRealtimeAlive
- * при возврате из фона.
+ * `silent` лечит «тихо умершие» subscribed-соединения: состояние осталось
+ * subscribed, но входящих событий нет дольше REALTIME_SILENCE_MS (проверка
+ * идёт после age, чтобы возрастные соединения логировались как age).
  */
 function watchdogRestartReason(
   entry: RealtimeEntry,
   now: number,
-): 'closed' | 'stale' | 'age' | null {
+): 'closed' | 'stale' | 'age' | 'silent' | null {
   if (entry.state === 'closed') {
     return 'closed';
   }
@@ -905,6 +906,9 @@ function watchdogRestartReason(
   }
   if (now - entry.startedAt > REALTIME_MAX_CONNECTION_AGE_MS) {
     return 'age';
+  }
+  if (entry.state === 'subscribed' && now - entry.lastActivityAt > REALTIME_SILENCE_MS) {
+    return 'silent';
   }
   return null;
 }
@@ -933,33 +937,29 @@ function restartByWatchdog(entry: RealtimeEntry, reason: string, now: number): v
 }
 
 /**
- * Перезапустить нездоровые соединения (state !== 'subscribed': закрытые и
- * застрявшие connecting/connected) — вызывается при возврате приложения из
- * фона и с нативного тика сторожа (в фоне JS-таймеры заморожены).
- *
- * Молчащее subscribed-соединение (lastActivityAt тише REALTIME_SILENCE_MS)
- * считается нездоровым только при force (возврат из фона): его сокет
- * пересоздаётся немедленно. В фоне такие соединения не перезапускаются —
- * достаточно того, что isRealtimeSubscribed для них возвращает false и
- * включается страховочный опрос (уведомления продолжают приходить).
+ * Перезапустить нездоровые соединения: закрытые и застрявшие
+ * connecting/connected (state !== 'subscribed'), а также «тихо умершие»
+ * subscribed-соединения (без входящих событий дольше REALTIME_SILENCE_MS).
+ * Вызывается при возврате приложения из фона и с нативного тика сторожа
+ * (в фоне JS-таймеры заморожены) — поэтому зомби-сокет пересоздаётся и в фоне.
  *
  * @param force true — принудительно, игнорируя REALTIME_RESTART_MIN_GAP_MS
  *   (возврат из фона: сокет обязан пересоздаться); false — мин-gap соблюдается.
- * Причина в логе: `resume` при force, `stale` — в остальных случаях.
+ * Причина в логе: `silent` для молчащего subscribed, `resume` при force,
+ * `stale` — в остальных случаях.
  */
 export function ensureRealtimeAlive(force = false): void {
   const now = Date.now();
   for (const entry of Array.from(entries.values())) {
-    if (entry.state === 'subscribed') {
-      if (force && now - entry.lastActivityAt > REALTIME_SILENCE_MS) {
-        restartByWatchdog(entry, 'resume', now);
-      }
-      continue;
+    const silent =
+      entry.state === 'subscribed' && now - entry.lastActivityAt > REALTIME_SILENCE_MS;
+    if (entry.state === 'subscribed' && !silent) {
+      continue; // живая подписка — не трогаем
     }
     if (!force && now - entry.lastRestartAt < REALTIME_RESTART_MIN_GAP_MS) {
       continue;
     }
-    restartByWatchdog(entry, force ? 'resume' : 'stale', now);
+    restartByWatchdog(entry, silent ? 'silent' : force ? 'resume' : 'stale', now);
   }
 }
 

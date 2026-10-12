@@ -29,9 +29,10 @@ type Props = {
   filterSeq?: number;
   onSelectItem: (item: CollectionItem) => void;
   onBack: () => void;
+  onOpenCalendar?: () => void;
 };
 
-export default function CollectionListScreen({collection, initialAccountId, filterSeq, onSelectItem, onBack}: Props) {
+export default function CollectionListScreen({collection, initialAccountId, filterSeq, onSelectItem, onBack, onOpenCalendar}: Props) {
   const {account: activeAccount, accountId: resolvedAccountId, accounts} = useActiveAccount();
   const {colors} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -438,6 +439,14 @@ export default function CollectionListScreen({collection, initialAccountId, filt
             />
           </TouchableOpacity>
         )}
+        {isApplications && onOpenCalendar ? (
+          <TouchableOpacity
+            style={styles.pauseButtonDefault}
+            onPress={onOpenCalendar}
+            accessibilityLabel="Календарь заявок">
+            <Icon name="calendar-month" size={20} color={colors.primary} />
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {currentAccount && (

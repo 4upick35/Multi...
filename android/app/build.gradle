@@ -86,8 +86,8 @@ android {
         applicationId "com.multielma"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "2.1"
+        versionCode 6
+        versionName "2.5"
     }
     signingConfigs {
         debug {

@@ -1181,12 +1181,20 @@ describe('сторож realtime', () => {
     const client = startConnected(makeAccount({id: 'acc-age'}));
     markSubscribed(client); // subscribed: срабатывает только причина age, не stale
 
-    jest.advanceTimersByTime(REALTIME_MAX_CONNECTION_AGE_MS + REALTIME_WATCHDOG_INTERVAL_MS);
+    // Держим подписку активной (без тишины), пока возраст не превысит порог:
+    // иначе раньше age сработала бы причина silent.
+    let elapsed = 0;
+    while (elapsed < REALTIME_MAX_CONNECTION_AGE_MS + REALTIME_WATCHDOG_INTERVAL_MS) {
+      jest.advanceTimersByTime(REALTIME_WATCHDOG_INTERVAL_MS);
+      elapsed += REALTIME_WATCHDOG_INTERVAL_MS;
+      markSubscribed(instances[instances.length - 1]);
+    }
 
     expect(instances).toHaveLength(2);
     expect(instances[0].disconnectCalled).toBe(true);
     expect(instances[1].connectCalled).toBe(true);
     expect(watchdogRestarts('age')).toHaveLength(1);
+    expect(watchdogRestarts('silent')).toHaveLength(0);
     expect(watchdogRestarts('closed')).toHaveLength(0);
     expect(watchdogRestarts('age')[0]).toContain('acc-age');
   });
@@ -1269,7 +1277,8 @@ describe('сторож realtime', () => {
 // «Зомби-подписка»: TCP-сокет Centrifugo умирает молча — ни disconnected, ни
 // error не приходит, state остаётся subscribed, и в пуш-режиме страховочный
 // опрос никогда не включается. Спасает учёт lastActivityAt: молчащее
-// соединение перестаёт считаться подписанным.
+// соединение перестаёт считаться подписанным (включается страховочный опрос)
+// и перезапускается сторожем с reason=silent (нативный тик в фоне).
 // ---------------------------------------------------------------------------
 
 describe('молчащая (зомби) подписка realtime', () => {
@@ -1288,7 +1297,7 @@ describe('молчащая (зомби) подписка realtime', () => {
     expect(isRealtimeSubscribed('acc-unknown')).toBe(false);
   });
 
-  it('после тишины дольше REALTIME_SILENCE_MS подписка считается мёртвой', () => {
+  it('subscribed, но тишина > порога → isRealtimeSubscribed false', () => {
     jest.useFakeTimers();
     const client = startConnected(makeAccount({id: 'acc-silent'}));
     markSubscribed(client);
@@ -1297,10 +1306,10 @@ describe('молчащая (зомби) подписка realtime', () => {
     jest.advanceTimersByTime(REALTIME_SILENCE_MS + 1000);
 
     expect(isRealtimeSubscribed('acc-silent')).toBe(false);
-    expect(instances).toHaveLength(1); // в фоне сокет сам не пересоздаётся
+    expect(instances).toHaveLength(1); // само по себе время сокет не пересоздаёт
   });
 
-  it('входящая публикация вновь делает подписку активной', () => {
+  it('после обновления активности → isRealtimeSubscribed снова true', () => {
     jest.useFakeTimers();
     const client = startConnected(makeAccount({id: 'acc-revive'}));
     markSubscribed(client);
@@ -1313,7 +1322,27 @@ describe('молчащая (зомби) подписка realtime', () => {
     expect(isRealtimeSubscribed('acc-revive')).toBe(true);
   });
 
-  it('ensureRealtimeAlive(false) молчащую подписку не трогает (фон)', () => {
+  it('ensureRealtimeAlive перезапускает только молчащее subscribed-соединение', () => {
+    jest.useFakeTimers();
+    const zombie = startConnected(makeAccount({id: 'acc-zombie'}));
+    markSubscribed(zombie);
+    jest.advanceTimersByTime(REALTIME_SILENCE_MS + 1000); // acc-zombie замолчал
+    const fresh = startConnected(makeAccount({id: 'acc-live'}));
+    markSubscribed(fresh); // свежая подписка — живая, не трогаем
+    mockedLogDiag.mockClear();
+
+    ensureRealtimeAlive();
+
+    expect(instances).toHaveLength(3);
+    expect(fresh.disconnectCalled).toBe(false);
+    expect(zombie.disconnectCalled).toBe(true);
+    const restarts = watchdogRestarts('silent');
+    expect(restarts).toHaveLength(1);
+    expect(restarts[0]).toContain('acc-zombie');
+    expect(restarts[0]).not.toContain('acc-live');
+  });
+
+  it('ensureRealtimeAlive(false) перезапускает молчащую подписку с reason=silent (нативный тик в фоне), повтор ограничен min-gap', () => {
     jest.useFakeTimers();
     const client = startConnected(makeAccount({id: 'acc-bg'}));
     markSubscribed(client);
@@ -1322,12 +1351,32 @@ describe('молчащая (зомби) подписка realtime', () => {
 
     ensureRealtimeAlive(false);
 
-    expect(instances).toHaveLength(1);
-    expect(instances[0].disconnectCalled).toBe(false);
-    expect(watchdogRestarts()).toHaveLength(0);
+    expect(instances).toHaveLength(2);
+    expect(instances[0].disconnectCalled).toBe(true);
+    expect(watchdogRestarts('silent')).toHaveLength(1);
+
+    ensureRealtimeAlive(false); // сразу после перезапуска — min-gap не прошёл
+    expect(instances).toHaveLength(2);
+    expect(watchdogRestarts('silent')).toHaveLength(1);
   });
 
-  it('ensureRealtimeAlive(true) перезапускает молчащую подписку (возврат из фона)', () => {
+  it('нативный тик перезапускает молчащую подписку с reason=silent', () => {
+    jest.useFakeTimers();
+    const client = startConnected(makeAccount({id: 'acc-tick-silent'}));
+    markSubscribed(client);
+    jest.advanceTimersByTime(REALTIME_SILENCE_MS + REALTIME_TICK_HEALTH_MIN_GAP_MS);
+    mockedLogDiag.mockClear();
+
+    DeviceEventEmitter.emit(SYNC_TICK_EVENT);
+
+    expect(instances).toHaveLength(2);
+    expect(instances[0].disconnectCalled).toBe(true);
+    expect(instances[1].connectCalled).toBe(true);
+    expect(watchdogRestarts('silent')).toHaveLength(1);
+    expect(watchdogRestarts('silent')[0]).toContain('acc-tick-silent');
+  });
+
+  it('ensureRealtimeAlive(true) перезапускает молчащую подписку с reason=silent (возврат из фона), min-gap игнорируется', () => {
     jest.useFakeTimers();
     const client = startConnected(makeAccount({id: 'acc-resume'}));
     markSubscribed(client);
@@ -1338,7 +1387,8 @@ describe('молчащая (зомби) подписка realtime', () => {
 
     expect(instances).toHaveLength(2);
     expect(instances[0].disconnectCalled).toBe(true);
-    expect(watchdogRestarts('resume')).toHaveLength(1);
+    expect(watchdogRestarts('silent')).toHaveLength(1);
+    expect(watchdogRestarts('resume')).toHaveLength(0);
   });
 
   it('ensureRealtimeAlive(true) свежую подписку не трогает', () => {

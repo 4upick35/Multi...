@@ -29,6 +29,7 @@ import ProfileScreen from './src/screens/tasks/ProfileScreen';
 import CustomerServiceScreen from './src/screens/customer/CustomerServiceScreen';
 import CollectionListScreen from './src/screens/customer/CollectionListScreen';
 import CollectionDetailScreen from './src/screens/customer/CollectionDetailScreen';
+import ApplicationsCalendarScreen from './src/screens/customer/ApplicationsCalendarScreen';
 import WorkCalendarScreen from './src/screens/customer/WorkCalendarScreen';
 import AppealsDirectoriesScreen from './src/screens/customer/AppealsDirectoriesScreen';
 import DocflowScreen from './src/screens/customer/DocflowScreen';
@@ -46,6 +47,7 @@ type Screen =
   | 'Feed'
   | 'WorkCalendar'
   | 'AppealsDirectories'
+  | 'ApplicationsCalendar'
   | 'Docflow'
   | {screen: 'TaskDetail'; taskId: string; accountId: string}
   | {screen: 'Execution'; taskId: string; accountId: string; taskUuid: string}
@@ -301,6 +303,18 @@ export default function App() {
     content = <FeedScreen onBack={goBack} />;
   } else if (screenName === 'WorkCalendar') {
     content = <WorkCalendarScreen onBack={goBack} />;
+  } else if (screenName === 'ApplicationsCalendar') {
+    content = (
+      <ApplicationsCalendarScreen
+        onBack={goBack}
+        onSelectItem={(item: CollectionItem) => {
+          const appsMeta = COLLECTIONS.find(c => c.key === 'applications');
+          if (appsMeta) {
+            push({screen: 'CollectionDetail', item, collection: appsMeta});
+          }
+        }}
+      />
+    );
   } else if (screenName === 'AppealsDirectories') {
     content = <AppealsDirectoriesScreen onBack={goBack} />;
   } else if (screenName === 'Docflow') {
@@ -345,6 +359,7 @@ export default function App() {
           push({screen: 'CollectionDetail', item, collection: screen.collection})
         }
         onBack={goBack}
+        onOpenCalendar={screen.collection.key === 'applications' ? () => push('ApplicationsCalendar') : undefined}
       />
     );
   } else if (typeof screen === 'object' && screen.screen === 'CollectionDetail') {

@@ -11,7 +11,7 @@ import {useSecureScreen} from '../../hooks/useSecureScreen';
 import {useAcceptApplication, canAccept} from '../../hooks/useAcceptApplication';
 import {useApplicationActions} from '../../hooks/useApplicationActions';
 import type {ElmaAccount} from '../../types/account';
-import {fileGetLink, fileDownloadLink, fetchPicassoEntityStatus} from '../../services/elma-api';
+import {fileGetLink, fileDownloadLink, fetchPicassoEntityStatus, fetchCollectionItemsByIds} from '../../services/elma-api';
 import type {PicassoSignStatus} from '../../services/elma-api';
 import {loadCollection} from '../../services/customer-service';
 import {getExtraFields, buildAddress, displayFieldValue} from '../../utils/collection-fields';
@@ -21,6 +21,8 @@ import {parsePhoneDisplay, parsePhoneTel, parseApplicantName} from '../../utils/
 import {copyToClipboard} from '../../native/KeepAlive';
 import {isSafeExternalUrl} from '../../utils/url';
 import {useAppTheme} from '../../theme';
+
+const SERVICE_CONTRACT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Props = {
   item: CollectionItem;
@@ -88,6 +90,47 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
 
   // Резолв имён ссылочных полей (UUID → имена)
   const [resolvedRefs, setResolvedRefs] = useState<Map<string, string>>(new Map());
+
+  const [contractName, setContractName] = useState('');
+
+  useEffect(() => {
+    if (!currentAccount) {
+      return;
+    }
+    const resolved = resolvedRefs.get('contract');
+    if (resolved) {
+      setContractName(resolved);
+      return;
+    }
+    const val = item.raw.contract;
+    const ids = (Array.isArray(val) ? val : [val]).filter(
+      (v): v is string => typeof v === 'string' && SERVICE_CONTRACT_UUID_RE.test(v),
+    );
+    if (ids.length === 0) {
+      setContractName('');
+      return;
+    }
+    let cancelled = false;
+    fetchCollectionItemsByIds(currentAccount, 'customer_service', 'contracts', ids)
+      .then(res => {
+        if (cancelled) {
+          return;
+        }
+        const names = (res.items || [])
+          .map(it => {
+            const o = it as Record<string, unknown>;
+            return String((o.__name as string) || (o.name as string) || '');
+          })
+          .filter(Boolean);
+        if (names.length > 0) {
+          setContractName(names.join(', '));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAccount, item.raw, resolvedRefs]);
 
   useEffect(() => {
     if (!currentAccount) {
@@ -249,6 +292,7 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
         const technic = displayFieldValue(raw.technic, resolvedRefs, 'technic');
         const requirement = displayFieldValue(raw.customers_requirement_ref, resolvedRefs, 'customers_requirement_ref');
         const visitDt = String(raw.datetime_of_session || '').trim();
+        const serviceCode = contractName || displayFieldValue(raw.contract, resolvedRefs, 'contract');
 
         const openAddress = () => {
           if (!address) { return; }
@@ -291,12 +335,18 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
           }
         };
 
-        const hasFields = address || phone || applicant || technic || requirement || visitDt;
+        const hasFields = address || phone || applicant || technic || requirement || visitDt || serviceCode;
         if (!hasFields) { return null; }
 
         return (
           <>
             <Divider style={styles.divider} />
+            {serviceCode ? (
+              <View style={styles.fieldRow}>
+                <Text style={styles.label}>Код услуги:</Text>
+                <Text style={styles.fieldValue}>{serviceCode}</Text>
+              </View>
+            ) : null}
             {applicant ? (
               <View style={styles.fieldRow}>
                 <Text style={styles.label}>Заявитель:</Text>
