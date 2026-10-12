@@ -368,6 +368,7 @@ export default function App() {
         item={screen.item}
         collection={screen.collection}
         onBack={goBack}
+        onOpenTask={(taskId, accountId) => push({screen: 'TaskDetail', taskId, accountId})}
       />
     );
   } else {

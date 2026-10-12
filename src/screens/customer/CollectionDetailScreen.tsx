@@ -7,6 +7,7 @@ import CaptchaModal from '../../components/CaptchaModal';
 import VisitScheduleModal from '../../components/VisitScheduleModal';
 import {CollectionItem, CollectionMeta} from '../../types/customer-service';
 import {useActiveAccount} from '../../hooks/useActiveAccount';
+import {useTasksStore} from '../../store/tasks-store';
 import {useSecureScreen} from '../../hooks/useSecureScreen';
 import {useAcceptApplication, canAccept} from '../../hooks/useAcceptApplication';
 import {useApplicationActions} from '../../hooks/useApplicationActions';
@@ -28,6 +29,7 @@ type Props = {
   item: CollectionItem;
   collection: CollectionMeta;
   onBack: () => void;
+  onOpenTask?: (taskId: string, accountId: string) => void;
 };
 
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
@@ -78,7 +80,7 @@ function formatDateTime(iso: string): string {
   }
 }
 
-export default function CollectionDetailScreen({item, collection, onBack}: Props) {
+export default function CollectionDetailScreen({item, collection, onBack, onOpenTask}: Props) {
   useSecureScreen();
   const attachments = getAttachments(item.raw);
 
@@ -86,6 +88,32 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
   const itemAccount = item.accountId ? (accounts.find(a => a.id === item.accountId) ?? null) : null;
   const currentAccount = item.accountId ? itemAccount : activeAccount;
   const {colors} = useAppTheme();
+
+  const tasksByAccount = useTasksStore(s => s.tasksByAccount);
+
+  const linkedTask = useMemo(() => {
+    for (const [accId, list] of Object.entries(tasksByAccount)) {
+      for (const t of list) {
+        if (t.itemRef && t.itemRef.id === item.id) {
+          return {taskId: t.id, accountId: t.accountId || accId};
+        }
+      }
+    }
+    const number = String(item.name || '').replace(/\D/g, '');
+    if (!number) {
+      return null;
+    }
+    for (const [accId, list] of Object.entries(tasksByAccount)) {
+      for (const t of list) {
+        const hay = `${t.name || ''} ${t.subject || ''}`;
+        if (hay.includes(number)) {
+          return {taskId: t.id, accountId: t.accountId || accId};
+        }
+      }
+    }
+    return null;
+  }, [tasksByAccount, item.id, item.name]);
+
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   // Резолв имён ссылочных полей (UUID → имена)
@@ -102,10 +130,28 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
       setContractName(resolved);
       return;
     }
-    const val = item.raw.contract;
-    const ids = (Array.isArray(val) ? val : [val]).filter(
-      (v): v is string => typeof v === 'string' && SERVICE_CONTRACT_UUID_RE.test(v),
-    );
+    const collectIds = (val: unknown): string[] => {
+      if (typeof val === 'string') {
+        return SERVICE_CONTRACT_UUID_RE.test(val) ? [val] : [];
+      }
+      if (Array.isArray(val)) {
+        return val.flatMap(collectIds);
+      }
+      if (val && typeof val === 'object') {
+        const o = val as Record<string, unknown>;
+        const nested = (o.__id as string) || (o.id as string) || (o.Id as string);
+        return typeof nested === 'string' && SERVICE_CONTRACT_UUID_RE.test(nested) ? [nested] : [];
+      }
+      return [];
+    };
+    const pickNames = (items: unknown[]): string[] =>
+      items
+        .map(it => {
+          const o = it as Record<string, unknown>;
+          return String((o.__name as string) || (o.name as string) || '');
+        })
+        .filter(Boolean);
+    const ids = collectIds(item.raw.contract);
     if (ids.length === 0) {
       setContractName('');
       return;
@@ -113,16 +159,16 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
     let cancelled = false;
     fetchCollectionItemsByIds(currentAccount, 'customer_service', 'contracts', ids)
       .then(res => {
-        if (cancelled) {
-          return;
+        const names = pickNames(res.items || []);
+        if (names.length > 0 || cancelled) {
+          return names;
         }
-        const names = (res.items || [])
-          .map(it => {
-            const o = it as Record<string, unknown>;
-            return String((o.__name as string) || (o.name as string) || '');
-          })
-          .filter(Boolean);
-        if (names.length > 0) {
+        return fetchCollectionItemsByIds(currentAccount, 'customer_service', 'services', ids).then(
+          r2 => pickNames(r2.items || []),
+        );
+      })
+      .then(names => {
+        if (!cancelled && names.length > 0) {
           setContractName(names.join(', '));
         }
       })
@@ -438,6 +484,17 @@ export default function CollectionDetailScreen({item, collection, onBack}: Props
           </Button>
         </View>
       )}
+
+      {linkedTask && onOpenTask ? (
+        <View style={styles.acceptRow}>
+          <Button
+            mode="outlined"
+            onPress={() => onOpenTask(linkedTask.taskId, linkedTask.accountId)}
+            style={styles.acceptButton}>
+            Перейти к задаче
+          </Button>
+        </View>
+      ) : null}
 
       {extraFields.length > 0 && (
         <>
