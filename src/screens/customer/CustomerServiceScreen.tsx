@@ -1,6 +1,6 @@
 import React, {useCallback, useEffect, useMemo, useRef} from 'react';
 import {useAppTheme} from '../../theme';
-import {View, StyleSheet, FlatList, TouchableOpacity, RefreshControl} from 'react-native';
+import {View, StyleSheet, FlatList, RefreshControl} from 'react-native';
 import {Text} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import {
@@ -17,6 +17,7 @@ import {getRemainingPauseMs} from '../../infrastructure/AccountThrottle';
 import AccountSelector from '../../components/AccountSelector';
 import {useAuthStore} from '../../store/auth-store';
 import {useSettingsStore} from '../../store/settings-store';
+import PressScale from '../../components/PressScale';
 
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
 
@@ -151,9 +152,10 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
     }
 
     return (
-      <TouchableOpacity
+      <PressScale
         style={styles.sectionCard}
         activeOpacity={0.7}
+        scaleTo={0.985}
         onPress={() => onSelectCollection(item)}>
         <View style={styles.sectionIconWrap}>
           <Icon name={item.icon} size={24} color={colors.primary} />
@@ -166,7 +168,7 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
           </Text>
         </View>
         <Icon name="chevron-right" size={20} color={colors.textTertiary} />
-      </TouchableOpacity>
+      </PressScale>
     );
   };
 
@@ -192,7 +194,7 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
         </Text>
 
         {onFeed && modeButtons.feed && (
-          <TouchableOpacity style={styles.feedBtn} activeOpacity={0.7} onPress={onFeed}>
+          <PressScale style={styles.feedBtn} activeOpacity={0.7} scaleTo={0.97} onPress={onFeed}>
             <View style={styles.feedIconWrap}>
               <Icon name="view-list" size={24} color={colors.primary} />
             </View>
@@ -201,11 +203,11 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
               <Text style={styles.feedHint}>Активность и события</Text>
             </View>
             <Icon name="chevron-right" size={20} color={colors.textTertiary} />
-          </TouchableOpacity>
+          </PressScale>
         )}
 
         {onWorkCalendar && modeButtons.workCalendar && (
-          <TouchableOpacity style={styles.feedBtn} activeOpacity={0.7} onPress={onWorkCalendar}>
+          <PressScale style={styles.feedBtn} activeOpacity={0.7} scaleTo={0.97} onPress={onWorkCalendar}>
             <View style={styles.feedIconWrap}>
               <Icon name="calendar-clock" size={24} color={colors.primary} />
             </View>
@@ -214,11 +216,11 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
               <Text style={styles.feedHint}>График работы и перерывы</Text>
             </View>
             <Icon name="chevron-right" size={20} color={colors.textTertiary} />
-          </TouchableOpacity>
+          </PressScale>
         )}
 
         {onAppealsDirectories && modeButtons.appealsDirectories && (
-          <TouchableOpacity style={styles.feedBtn} activeOpacity={0.7} onPress={onAppealsDirectories}>
+          <PressScale style={styles.feedBtn} activeOpacity={0.7} scaleTo={0.97} onPress={onAppealsDirectories}>
             <View style={styles.feedIconWrap}>
               <Icon name="folder-tree" size={24} color={colors.primary} />
             </View>
@@ -227,11 +229,11 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
               <Text style={styles.feedHint}>Иерархический справочник</Text>
             </View>
             <Icon name="chevron-right" size={20} color={colors.textTertiary} />
-          </TouchableOpacity>
+          </PressScale>
         )}
 
         {onDocflow && modeButtons.docflow && (
-          <TouchableOpacity style={styles.feedBtn} activeOpacity={0.7} onPress={onDocflow}>
+          <PressScale style={styles.feedBtn} activeOpacity={0.7} scaleTo={0.97} onPress={onDocflow}>
             <View style={styles.feedIconWrap}>
               <Icon name="file-check" size={24} color={colors.primary} />
             </View>
@@ -240,7 +242,7 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
               <Text style={styles.feedHint}>Документы на согласование</Text>
             </View>
             <Icon name="chevron-right" size={20} color={colors.textTertiary} />
-          </TouchableOpacity>
+          </PressScale>
         )}
       </View>
 

@@ -58,3 +58,12 @@ export function mixWithWhite(hex: string, amount: number): string {
   const b = Math.round(c.b + (255 - c.b) * amount);
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
+
+export function mixWithBlack(hex: string, amount: number): string {
+  const c = parseHex(hex);
+  if (!c) { return hex; }
+  const r = Math.round(c.r * (1 - amount));
+  const g = Math.round(c.g * (1 - amount));
+  const b = Math.round(c.b * (1 - amount));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}

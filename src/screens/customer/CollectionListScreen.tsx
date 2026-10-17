@@ -15,7 +15,8 @@ import {useAcceptApplication, canAccept} from '../../hooks/useAcceptApplication'
 import QuantumLoader from '../../components/QuantumLoader';
 import type {ElmaAccount} from '../../types/account';
 import {buildShortAddress, sortApplicationsByNumberDesc} from '../../utils/collection-fields';
-import {contrastText, mixWithWhite} from '../../utils/color';
+import {contrastText, mixWithWhite, mixWithBlack} from '../../utils/color';
+import PressScale from '../../components/PressScale';
 import {formatTimeHMS} from '../../utils/datetime';
 import {logDiag} from '../../diag/accept-log';
 import {getRemainingPauseMs} from '../../infrastructure/AccountThrottle';
@@ -34,7 +35,7 @@ type Props = {
 
 export default function CollectionListScreen({collection, initialAccountId, filterSeq, onSelectItem, onBack, onOpenCalendar}: Props) {
   const {account: activeAccount, accountId: resolvedAccountId, accounts} = useActiveAccount();
-  const {colors} = useAppTheme();
+  const {colors, mode} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const activeAccountId = resolvedAccountId;
   const currentAccount = activeAccount || (activeAccountId ? accounts.find(a => a.id === activeAccountId) : null);
@@ -330,7 +331,7 @@ export default function CollectionListScreen({collection, initialAccountId, filt
 
     return (
       <View>
-        <TouchableOpacity
+        <PressScale
           style={styles.itemCard}
           activeOpacity={0.7}
           onPress={() => onSelectItem(item)}>
@@ -364,7 +365,7 @@ export default function CollectionListScreen({collection, initialAccountId, filt
             </Text>
           ) : null}
           <Icon name="chevron-right" size={18} color={colors.muted} />
-        </TouchableOpacity>
+        </PressScale>
         {showAcceptButton && (
           <TouchableOpacity
             style={styles.acceptBtn}
@@ -492,21 +493,20 @@ export default function CollectionListScreen({collection, initialAccountId, filt
             {accounts.map((acc) => {
               const active = filterAccountId === acc.id;
               const accTs = lastRefreshAt[acc.id];
+              const chipBg = active ? acc.color : (mode === 'dark' ? mixWithBlack(acc.color, 0.55) : mixWithWhite(acc.color, 0.7));
               return (
                 <TouchableOpacity
                   key={acc.id}
                   style={[
                     styles.accountFilterChip,
-                    active
-                      ? {backgroundColor: acc.color}
-                      : {backgroundColor: mixWithWhite(acc.color, 0.7)},
+                    {backgroundColor: chipBg},
                   ]}
                   onPress={() => setFilterAccountId(active ? null : acc.id)}>
                   <Text
                     numberOfLines={1}
                     style={[
                       styles.accountFilterChipText,
-                      {color: active ? contrastText(acc.color) : colors.textPrimary},
+                      {color: contrastText(chipBg)},
                     ]}>
                     {acc.name}
                   </Text>
@@ -514,7 +514,7 @@ export default function CollectionListScreen({collection, initialAccountId, filt
                     <Text
                       style={[
                         styles.accountFilterChipTime,
-                        {color: active ? contrastText(acc.color) : acc.color},
+                        {color: contrastText(chipBg)},
                       ]}>
                       {formatTimeHMS(new Date(accTs))}
                     </Text>

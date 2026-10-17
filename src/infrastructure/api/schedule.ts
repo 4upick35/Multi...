@@ -1,6 +1,6 @@
 import {ElmaAccount} from '../../types/account';
 import {uuidv4} from '../../utils/uuid';
-import {makeRequest} from './client';
+import {makeRequest, VISIT_WRITE_HEADERS} from './client';
 import {parseBpmTemplate} from './bpm';
 import type {AcceptTemplate} from './bpm';
 import {buildCaptchaContext, buildCaptchaFields} from './accept';
@@ -21,6 +21,7 @@ export interface MasterProfile {
 export interface ScheduleVisitInitResult {
   masterIds: string[];
   minDate: string | null;
+  preselectedMasterId: string | null;
 }
 
 /**
@@ -68,7 +69,7 @@ export async function getScheduleVisitInitData(
       context: buildCaptchaContext(contextFields, applicationId, null),
       extraContexts: [{'name': 'ViewContext', 'fields': [], 'value': {}}],
     };
-    const {data, updatedAccount} = await makeRequest(account, 'post', '/api/widgets/execute', body);
+    const {data, updatedAccount} = await makeRequest(account, 'post', '/api/widgets/execute', body, undefined, VISIT_WRITE_HEADERS);
     const resp = data as Record<string, unknown> | undefined;
     const fieldsData = resp?.fieldsData as Record<string, unknown> | undefined;
     if (!fieldsData) {
@@ -94,7 +95,11 @@ export async function getScheduleVisitInitData(
       }
     }
 
-    return {init: {masterIds, minDate}, updatedAccount};
+    const respContext = resp?.context as Record<string, unknown> | undefined;
+    const masterContext = respContext?.master;
+    const preselectedMasterId = Array.isArray(masterContext) && masterContext.length > 0 ? String(masterContext[0]) : null;
+
+    return {init: {masterIds, minDate, preselectedMasterId}, updatedAccount};
   } catch {
     return {init: null};
   }
@@ -206,12 +211,6 @@ export function buildScheduleVisitBody(params: {
     __runHash: uuidv4(),
   };
 
-  // UUID — id полей формы form_f0fd9dd9-... v5 (из HAR12)
-  if (formCode === 'form_f0fd9dd9-0ef3-49c6-a338-ef8cef013516') {
-    body[`${ns}._process_date_and_wizard_approval.c988f01a-30b0-4b1a-981d-fa9bc6aa5a5c.visit_date`] = params.visitDateIso;
-    body[`${ns}._process_date_and_wizard_approval.81578d3e-4201-4cfb-9827-68040eb238bc.master`] = [params.masterId];
-  }
-
   return body;
 }
 
@@ -237,6 +236,8 @@ export async function runScheduleVisit(
       'put',
       `/api/bpm/templates/public/${params.templateId}/${params.templateVersion}/run`,
       body,
+      undefined,
+      VISIT_WRITE_HEADERS,
     );
     return {ok: true, updatedAccount};
   } catch (e: unknown) {

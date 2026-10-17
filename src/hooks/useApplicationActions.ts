@@ -20,6 +20,7 @@ interface UseApplicationActionsResult {
   masters: MasterProfile[];
   minDate: Date | null;
   error: string | null;
+  defaultMasterId: string | null;
   scheduleVisit: (applicationId: string) => Promise<void>;
   submitVisit: (applicationId: string, visitDateIso: string, masterId: string) => Promise<boolean>;
   createDocumentPackage: (applicationId: string) => Promise<boolean>;
@@ -37,6 +38,7 @@ export function useApplicationActions(
   const [masters, setMasters] = useState<MasterProfile[]>([]);
   const [minDate, setMinDate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [defaultMasterId, setDefaultMasterId] = useState<string | null>(null);
 
   const showError = useCallback((msg: string) => {
     setError(msg);
@@ -52,6 +54,7 @@ export function useApplicationActions(
       }
       setActionState('loadingForm');
       setError(null);
+      setDefaultMasterId(null);
 
       try {
         const templateResult = await getScheduleVisitTemplate(account);
@@ -88,6 +91,8 @@ export function useApplicationActions(
         } else {
           setMinDate(new Date());
         }
+
+        setDefaultMasterId(initResult.init.preselectedMasterId ?? null);
 
         setActionState('readyToSchedule');
       } catch (e: unknown) {
@@ -133,6 +138,7 @@ export function useApplicationActions(
         });
 
         if (runResult.ok) {
+          setDefaultMasterId(null);
           setActionState('done');
           Alert.alert('Готово', 'Визит назначен.');
           await loadCollection(account, 'applications');
@@ -206,6 +212,7 @@ export function useApplicationActions(
     masters,
     minDate,
     error,
+    defaultMasterId,
     scheduleVisit,
     submitVisit,
     createDocumentPackage,

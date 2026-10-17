@@ -92,13 +92,13 @@ describe('buildScheduleVisitBody', () => {
     expect(body['customer_service.applications.form_f0fd9dd9-0ef3-49c6-a338-ef8cef013516/popover.__renderContentAsync']).toBe(false);
   });
 
-  it('содержит два UUID-ключа полей формы для form_f0fd9dd9-... v5', () => {
+  it('не содержит захардкоженных UUID-ключей полей процесса', () => {
     const body = buildScheduleVisitBody(baseParams);
     const ns = 'customer_service.applications';
     const key1 = `${ns}._process_date_and_wizard_approval.c988f01a-30b0-4b1a-981d-fa9bc6aa5a5c.visit_date`;
     const key2 = `${ns}._process_date_and_wizard_approval.81578d3e-4201-4cfb-9827-68040eb238bc.master`;
-    expect(body[key1]).toBe('2026-09-21T17:30:00.000Z');
-    expect(body[key2]).toEqual(['01a04842-a3b2-7147-af4f-91a551332b56']);
+    expect(body[key1]).toBeUndefined();
+    expect(body[key2]).toBeUndefined();
   });
 
   it('НЕ содержит UUID-ключи для другого formCode', () => {

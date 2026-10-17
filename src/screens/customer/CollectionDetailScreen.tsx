@@ -250,6 +250,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
           loading={actions.actionState === 'sending'}
           masters={actions.masters}
           minDate={actions.minDate}
+          defaultMasterId={actions.defaultMasterId}
           onCancel={actions.cancelSchedule}
           onSubmit={(visitDateIso, masterId) => {
             actions.submitVisit(item.id, visitDateIso, masterId).then((ok) => {

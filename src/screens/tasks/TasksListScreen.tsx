@@ -10,6 +10,7 @@ import TaskCard from '../../components/TaskCard';
 import AccountAvatar from '../../components/AccountAvatar';
 import {TaskFilter} from '../../types/task';
 import {refreshAccountTasks} from '../../services/task-service';
+import {contrastText} from '../../utils/color';
 import {useRefresh} from '../../hooks/useRefresh';
 
 type Props = {onTaskPress: (taskId: string, accountId: string) => void};
@@ -122,7 +123,7 @@ export default function TasksListScreen({onTaskPress}: Props) {
           <TouchableOpacity
             style={[styles.accountBtn, !effectiveSelectedAccountId && styles.accountBtnActive]}
             onPress={() => handleAccountPress(null)}>
-            <Text style={styles.accountBtnText}>Все</Text>
+            <Text style={[styles.accountBtnText, !effectiveSelectedAccountId && {color: contrastText(colors.primary)}]}>Все</Text>
           </TouchableOpacity>
           {accounts.map((acc) => (
             <TouchableOpacity
@@ -133,7 +134,7 @@ export default function TasksListScreen({onTaskPress}: Props) {
               ]}
               onPress={() => handleAccountPress(acc.id)}>
               <AccountAvatar name={acc.name} color={acc.color} size={20} />
-              <Text style={[styles.accountBtnText, {marginLeft: 6}]}>
+              <Text style={[styles.accountBtnText, {marginLeft: 6}, effectiveSelectedAccountId === acc.id && {color: contrastText(acc.color)}]}>
                 {acc.name}
               </Text>
             </TouchableOpacity>

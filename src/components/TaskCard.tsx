@@ -1,9 +1,10 @@
 import React, {useMemo} from 'react';
 import {useAppTheme} from '../theme';
-import {View, StyleSheet, TouchableOpacity} from 'react-native';
+import {View, StyleSheet} from 'react-native';
 import {Text, Chip} from 'react-native-paper';
 import {ElmaTask} from '../types/task';
 import {getStatusLabel, getStatusColor} from '../services/task-service';
+import PressScale from './PressScale';
 
 type Props = {
   task: ElmaTask;
@@ -23,7 +24,7 @@ export default function TaskCard({task, accountColor, accountName, onPress}: Pro
   const priorityColor = task.priorityColor || '#9E9E9E';
 
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
+    <PressScale style={styles.card} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.header}>
         <Chip
           compact
@@ -48,7 +49,7 @@ export default function TaskCard({task, accountColor, accountName, onPress}: Pro
           {priorityLabel}
         </Chip>
       </View>
-    </TouchableOpacity>
+    </PressScale>
   );
 }
 

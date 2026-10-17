@@ -20,6 +20,7 @@ interface Props {
   loading: boolean;
   masters: Master[];
   minDate?: Date | null;
+  defaultMasterId?: string | null;
   onCancel: () => void;
   onSubmit: (visitDateIso: string, masterId: string) => void;
 }
@@ -30,6 +31,7 @@ export default function VisitScheduleModal({
   loading,
   masters,
   minDate,
+  defaultMasterId,
   onCancel,
   onSubmit,
 }: Props) {
@@ -48,11 +50,11 @@ export default function VisitScheduleModal({
       const now = new Date();
       const initial = minDate && minDate > now ? minDate : now;
       setSelectedDate(initial);
-      setSelectedMasterId('');
+      setSelectedMasterId(defaultMasterId ?? '');
       setPickerMode('date');
       setShowPicker(false);
     }
-  }, [visible, minDate]);
+  }, [visible, minDate, defaultMasterId]);
 
   const handlePickerChange = useCallback(
     (_event: DateTimePickerEvent, date?: Date) => {

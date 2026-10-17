@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState, useMemo} from 'react';
-import {View, TouchableOpacity, Text, StyleSheet, StatusBar, Platform, BackHandler} from 'react-native';
+import {View, TouchableOpacity, Text, StyleSheet, StatusBar, Platform, BackHandler, Animated} from 'react-native';
 import {PaperProvider, MD3LightTheme, MD3DarkTheme} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
@@ -62,6 +62,22 @@ function getScreenName(s: Screen): string {
   return typeof s === 'string' ? s : s.screen;
 }
 
+function getScreenKey(s: Screen): string {
+  if (typeof s === 'string') {
+    return s;
+  }
+  if (s.screen === 'TaskDetail') {
+    return 'TaskDetail:' + s.taskId;
+  }
+  if (s.screen === 'Execution') {
+    return 'Execution:' + s.taskUuid;
+  }
+  if (s.screen === 'CollectionList') {
+    return 'CollectionList:' + s.collection.key;
+  }
+  return 'CollectionDetail:' + s.item.id;
+}
+
 export default function App() {
   const {colors, mode} = useAppTheme();
   const accounts = useAuthStore((s) => s.accounts);
@@ -73,6 +89,13 @@ export default function App() {
 
   const screen = history[history.length - 1];
   const screenName = getScreenName(screen);
+
+  const screenFade = useRef(new Animated.Value(1)).current;
+  const screenKey = getScreenKey(screen);
+  useEffect(() => {
+    screenFade.setValue(0);
+    Animated.timing(screenFade, {toValue: 1, duration: 180, useNativeDriver: true}).start();
+  }, [screenKey, screenFade]);
 
   usePolling();
   useNotifications();
@@ -410,9 +433,9 @@ export default function App() {
     <PaperProvider theme={mode === 'dark' ? MD3DarkTheme : MD3LightTheme}>
       <StatusBar barStyle={mode === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.surface} />
       <View style={appStyles.root}>
-        <View style={appStyles.content}>
+        <Animated.View style={[appStyles.content, {opacity: screenFade, transform: [{translateY: screenFade.interpolate({inputRange: [0, 1], outputRange: [8, 0]})}]}]}>
           {content}
-        </View>
+        </Animated.View>
         {showTabs && (
           <View style={appStyles.tabBar}>
             {canShowService && (
