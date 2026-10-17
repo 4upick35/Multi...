@@ -1,4 +1,24 @@
 import {NativeModules, Platform, DeviceEventEmitter} from 'react-native';
+import {
+  DEFAULT_ALERT_VOLUME,
+  DEFAULT_NEW_APPLICATION_SOUND,
+  DEFAULT_OTHER_SOUND,
+} from '../config/constants';
+
+/** Настройки звука/вибрации для локального уведомления. */
+export interface AlertOptions {
+  sound?: boolean;
+  vibration?: boolean;
+  repeatCount?: number;
+  /** Идентификатор звука (raw:<имя> | system | uri:<uri>). */
+  soundId?: string;
+  /** Громкость 0..10. */
+  volume?: number;
+}
+
+function normalizeVolume(volume: number | undefined): number {
+  return Math.max(0, Math.min(10, volume ?? DEFAULT_ALERT_VOLUME));
+}
 
 /**
  * Типизированное описание нативной части моста (см. android/.../KeepAliveModule.kt,
@@ -10,10 +30,11 @@ interface KeepAliveNativeModule {
   startBackgroundSync(title: string | null, body: string | null): Promise<void>;
   stopBackgroundSync(): Promise<void>;
   isBackgroundSyncRunning(): Promise<boolean>;
-  notify(title: string | null, body: string | null): void;
+  notify(title: string | null, body: string | null, sound: boolean, vibration: boolean, soundId: string | null, volume: number): void;
   requestBatteryOptimizationSettings(): void;
   isIgnoringBatteryOptimizations(): Promise<boolean>;
-  alertNewItem(title: string | null, body: string | null, sound: boolean, vibration: boolean, repeatCount: number, accountId: string | null): void;
+  alertNewItem(title: string | null, body: string | null, sound: boolean, vibration: boolean, repeatCount: number, accountId: string | null, soundId: string | null, volume: number): void;
+  previewAlertSound(soundId: string | null, volume: number): void;
   stopAlert(): void;
   showOverlayWidget(text: string | null): void;
   hideOverlayWidget(): void;
@@ -25,6 +46,7 @@ interface KeepAliveNativeModule {
   startSyncTicker(): void;
   stopSyncTicker(): void;
   delay(ms: number): Promise<void>;
+  getCaptchaUserAgent(): string;
   getCookies(url: string): Promise<string | null>;
   saveSecret(key: string, value: string): Promise<boolean>;
   getSecret(key: string): Promise<string | null>;
@@ -118,11 +140,16 @@ export function isBackgroundSyncRunning(): Promise<boolean> {
 }
 
 /**
- * Показывает локальное уведомление о новой задаче (канал "task_alerts"),
- * независимо от фонового сервиса.
+ * Показывает локальное уведомление о новой задаче (канал "task_alerts_v2"),
+ * независимо от фонового сервиса. Звук/громкость выбираются по настройкам.
  */
-export function notifyTask(title: string, body: string): void {
-  whenAvailable(nativeModule => nativeModule.notify(title, body));
+export function notifyTask(title: string, body: string, options?: AlertOptions): void {
+  const sound = options?.sound !== false;
+  const vibration = options?.vibration !== false;
+  const soundId = options?.soundId || DEFAULT_OTHER_SOUND;
+  whenAvailable(nativeModule =>
+    nativeModule.notify(title, body, sound, vibration, soundId, normalizeVolume(options?.volume)),
+  );
 }
 
 /** Открывает системный экран с запросом отключения оптимизации батареи для приложения. */
@@ -145,13 +172,32 @@ export function isIgnoringBatteryOptimizations(): Promise<boolean> {
 export function alertNewItem(
   title: string,
   body: string,
-  options?: {sound?: boolean; vibration?: boolean; repeatCount?: number},
+  options?: AlertOptions,
   accountId?: string | null,
 ): void {
   const sound = options?.sound !== false;
   const vibration = options?.vibration !== false;
   const repeatCount = Math.max(1, Math.min(10, options?.repeatCount ?? 1));
-  whenAvailable(nativeModule => nativeModule.alertNewItem(title, body, sound, vibration, repeatCount, accountId ?? null));
+  const soundId = options?.soundId || DEFAULT_NEW_APPLICATION_SOUND;
+  whenAvailable(nativeModule =>
+    nativeModule.alertNewItem(
+      title,
+      body,
+      sound,
+      vibration,
+      repeatCount,
+      accountId ?? null,
+      soundId,
+      normalizeVolume(options?.volume),
+    ),
+  );
+}
+
+/** Проиграть выбранный звук один раз — предпрослушивание в настройках. */
+export function previewAlertSound(soundId: string, volume: number): void {
+  whenAvailable(nativeModule =>
+    nativeModule.previewAlertSound(soundId, normalizeVolume(volume)),
+  );
 }
 
 /** Остановить текущий звук/вибрацию уведомления. */
@@ -190,6 +236,22 @@ export function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
   return nativeModule.delay(ms);
+}
+
+// --- Captcha (WebView UA) ---
+
+/**
+ * Синхронно возвращает User-Agent без маркеров WebView (`; wv`, `Version/4.0 `)
+ * для reCAPTCHA в CaptchaModal. Вне Android или при ошибке — пустая строка
+ * (тогда проп userAgent в WebView не передаётся).
+ */
+export function getCaptchaUserAgent(): string {
+  try {
+    const ua = keepAlive?.getCaptchaUserAgent?.();
+    return typeof ua === 'string' ? ua : '';
+  } catch {
+    return '';
+  }
 }
 
 // --- Cookie bank (diag) ---

@@ -12,7 +12,7 @@ import {
   requestNotificationPermission,
   checkIsIgnoringBatteryOptimizations,
 } from '../../utils/permissions';
-import {ACCOUNT_COLORS, PRIORITY_MAX_ACCOUNTS} from '../../config/constants';
+import {ACCOUNT_COLORS, PRIORITY_MAX_ACCOUNTS, ALERT_SOUND_OPTIONS, ALERT_VOLUME_OPTIONS} from '../../config/constants';
 import {contrastText} from '../../utils/color';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import {
@@ -20,6 +20,7 @@ import {
   hasOverlayPermission,
   requestOverlayPermission,
   requestBatteryOptimizationSettings,
+  previewAlertSound,
 } from '../../native/KeepAlive';
 import {hasDiagLog, shareDiagLog} from '../../diag/accept-log';
 import {clearAcceptTemplates} from '../../services/accept-template-cache';
@@ -53,6 +54,68 @@ function formatSyncStatus(s: AccountSyncState | undefined): {text: string; color
   }
 }
 
+type SoundGroupProps = {
+  title: string;
+  soundId: string;
+  volume: number;
+  disabled: boolean;
+  styles: ReturnType<typeof createStyles>;
+  onChangeSound: (id: string) => void;
+  onChangeVolume: (value: number) => void;
+};
+
+function AlertSoundGroup({
+  title,
+  soundId,
+  volume,
+  disabled,
+  styles,
+  onChangeSound,
+  onChangeVolume,
+}: SoundGroupProps) {
+  return (
+    <View>
+      <Text style={styles.label}>{title}</Text>
+      <View style={styles.chipRow}>
+        {ALERT_SOUND_OPTIONS.map((option) => {
+          const selected = soundId === option.id;
+          return (
+            <Chip
+              key={option.id}
+              selected={selected}
+              disabled={disabled}
+              onPress={() => onChangeSound(option.id)}
+              style={[styles.chip, selected && styles.chipActive]}
+              textStyle={selected ? styles.chipTextActive : undefined}>
+              {option.label}
+            </Chip>
+          );
+        })}
+        <Chip icon="play" disabled={disabled} onPress={() => previewAlertSound(soundId, volume)}>
+          Прослушать
+        </Chip>
+      </View>
+      <Text style={styles.label}>Громкость: {volume}</Text>
+      <View style={styles.chipRow}>
+        {ALERT_VOLUME_OPTIONS.map((value) => {
+          const selected = volume === value;
+          return (
+            <Chip
+              key={value}
+              selected={selected}
+              disabled={disabled}
+              onPress={() => onChangeVolume(value)}
+              style={[styles.chip, selected && styles.chipActive]}
+              textStyle={selected ? styles.chipTextActive : undefined}>
+              {value}
+            </Chip>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 export default function SettingsScreen({onAddAccount, onProfile}: Props) {
   const {colors} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -74,6 +137,10 @@ export default function SettingsScreen({onAddAccount, onProfile}: Props) {
   const soundEnabled = useSettingsStore((s) => s.soundEnabled);
   const vibrationEnabled = useSettingsStore((s) => s.vibrationEnabled);
   const alertRepeatCount = useSettingsStore((s) => s.alertRepeatCount);
+  const newApplicationSoundId = useSettingsStore((s) => s.newApplicationSoundId);
+  const newApplicationVolume = useSettingsStore((s) => s.newApplicationVolume);
+  const otherSoundId = useSettingsStore((s) => s.otherSoundId);
+  const otherVolume = useSettingsStore((s) => s.otherVolume);
   const floatingWidgetEnabled = useSettingsStore((s) => s.floatingWidgetEnabled);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const themeMode = useSettingsStore((s) => s.themeMode);
@@ -476,6 +543,26 @@ export default function SettingsScreen({onAddAccount, onProfile}: Props) {
           </Chip>
         ))}
       </View>
+
+      <Text style={styles.label}>Звук по группам уведомлений</Text>
+      <AlertSoundGroup
+        title="Поступила новая заявка"
+        soundId={newApplicationSoundId}
+        volume={newApplicationVolume}
+        disabled={!notificationsEnabled || !soundEnabled}
+        styles={styles}
+        onChangeSound={(id) => updateSettings({newApplicationSoundId: id})}
+        onChangeVolume={(value) => updateSettings({newApplicationVolume: value})}
+      />
+      <AlertSoundGroup
+        title="Остальные уведомления"
+        soundId={otherSoundId}
+        volume={otherVolume}
+        disabled={!notificationsEnabled || !soundEnabled}
+        styles={styles}
+        onChangeSound={(id) => updateSettings({otherSoundId: id})}
+        onChangeVolume={(value) => updateSettings({otherVolume: value})}
+      />
 
       <Divider style={styles.divider} />
 

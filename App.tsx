@@ -2,9 +2,9 @@ import React, {useCallback, useEffect, useRef, useState, useMemo} from 'react';
 import {View, TouchableOpacity, Text, StyleSheet, StatusBar, Platform, BackHandler} from 'react-native';
 import {PaperProvider, MD3LightTheme, MD3DarkTheme} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {useAuthStore} from './src/store/auth-store';
+import {useSettingsStore} from './src/store/settings-store';
 import {useUiStore} from './src/store/ui-store';
 import {useFeedStore} from './src/store/feed-store';
 import {useAppTheme} from './src/theme';
@@ -112,19 +112,18 @@ export default function App() {
     loadAccounts();
   }, [loadAccounts]);
 
-  // Auto-request POST_NOTIFICATIONS on startup (once) when accounts exist
+  // Запрос POST_NOTIFICATIONS при старте (Android 13+ и включённые уведомления):
+  // персистентный флаг не нужен — после ответа пользователя Android сам больше
+  // не показывает системный диалог.
   useEffect(() => {
-    if (accounts.length > 0) {
-      const NOTIF_ASKED_KEY = '@multi_ma_notif_asked';
-      AsyncStorage.getItem(NOTIF_ASKED_KEY).then((asked) => {
-        if (!asked) {
-          requestNotificationPermission().then(() => {
-            AsyncStorage.setItem(NOTIF_ASKED_KEY, '1').catch(() => {});
-          });
-        }
-      });
+    if (Platform.OS !== 'android' || Platform.Version < 33) {
+      return;
     }
-  }, [accounts.length]);
+    if (!useSettingsStore.getState().notificationsEnabled) {
+      return;
+    }
+    requestNotificationPermission();
+  }, []);
 
   const canShowFeed = pageAccessService.hasPageAccess(accounts, activeAccountId, 'feed');
   // Сервис доступен всем ролям при наличии аккаунтов

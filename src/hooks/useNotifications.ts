@@ -4,6 +4,7 @@ import {ElmaAccount} from '../types/account';
 import * as KeepAliveNative from '../native/KeepAlive';
 import * as TasksStore from '../store/tasks-store';
 import * as AuthStore from '../store/auth-store';
+import * as SettingsStore from '../store/settings-store';
 
 // ---------------------------------------------------------------------------
 // detectNewTasks — pure helper
@@ -25,14 +26,23 @@ function sendNotification(
   task: ElmaTask,
   accountName: string,
 ): void {
+  const settings = SettingsStore.useSettingsStore.getState();
+  if (!settings.notificationsEnabled || !settings.notifyNewTasks) {
+    return;
+  }
   const title = `Новая задача: ${task.subject || task.name}`;
   const body = `${accountName}`;
   try {
     const keepAlive = KeepAliveNative as {
-      notifyTask?: (t: string, b: string) => void;
+      notifyTask?: (t: string, b: string, o?: {sound?: boolean; vibration?: boolean; soundId?: string; volume?: number}) => void;
     };
     if (typeof keepAlive.notifyTask === 'function') {
-      keepAlive.notifyTask(title, body);
+      keepAlive.notifyTask(title, body, {
+        sound: settings.soundEnabled,
+        vibration: settings.vibrationEnabled,
+        soundId: settings.otherSoundId,
+        volume: settings.otherVolume,
+      });
       return;
     }
   } catch {

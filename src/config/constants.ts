@@ -55,6 +55,24 @@ export const PUSH_FALLBACK_DELAY_MS = 15_000;
 
 export const DEEP_LINK_PREFIX = 'elma://';
 
+// Звуки уведомлений. Идентификатор понимает нативный слой (KeepAliveModule.createAlertPlayer):
+// raw:<имя> — встроенный ресурс res/raw, system — системный звук, uri:<uri> — внешний.
+export const ALERT_SOUND_GENERAL = 'raw:notification_general';
+export const ALERT_SOUND_ALERT = 'raw:notification_alert';
+export const ALERT_SOUND_SYSTEM = 'system';
+
+export const ALERT_SOUND_OPTIONS: {id: string; label: string}[] = [
+  {id: ALERT_SOUND_GENERAL, label: 'Обычный'},
+  {id: ALERT_SOUND_ALERT, label: 'Тревожный'},
+  {id: ALERT_SOUND_SYSTEM, label: 'Системный'},
+];
+
+export const ALERT_VOLUME_OPTIONS = [1, 3, 5, 7, 10];
+
+export const DEFAULT_NEW_APPLICATION_SOUND = ALERT_SOUND_ALERT;
+export const DEFAULT_OTHER_SOUND = ALERT_SOUND_GENERAL;
+export const DEFAULT_ALERT_VOLUME = 10;
+
 export const STORAGE_KEYS = {
   accounts: '@multi_elma_accounts',
   settings: '@multi_elma_settings',

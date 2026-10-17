@@ -7,6 +7,7 @@ import type {TaskExitField} from '../services/elma-api';
 import {searchWorkerQuery} from '../services/elma-api';
 import type {ElmaAccount} from '../types/account';
 import {getItemName} from '../utils/collection-fields';
+import {toElmaDateOnlyIso, toElmaTimeOnlyIso} from '../utils/datetime';
 import {useAppTheme} from '../theme';
 
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
@@ -200,13 +201,12 @@ function buildValues(fields: TaskExitField[], states: Record<string, FieldState>
       case 'DATE':
         if (state.iso) {
           if (isTimeOnlyField(field)) {
-            // «Только время» — это реальный момент времени (как его выбрал мастер),
-            // приведённый к дате эпохи: 1970-01-01T<UTC-время>:00.000Z.
-            // Локальные ЧЧ:ММ конвертируются в UTC один раз — без двойного сдвига.
-            const picked = new Date(state.iso);
-            result[field.code] = new Date(
-              1970, 0, 1, picked.getHours(), picked.getMinutes(),
-            ).toISOString();
+            // время отправляем как есть, без пересчёта в UTC
+            result[field.code] = toElmaTimeOnlyIso(new Date(state.iso));
+            return;
+          }
+          if (field.type === 'DATE') {
+            result[field.code] = toElmaDateOnlyIso(new Date(state.iso));
             return;
           }
           result[field.code] = state.iso;

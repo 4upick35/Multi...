@@ -15,8 +15,14 @@ import {logDiag} from '../diag/accept-log';
 import {maskValue} from '../utils/mask';
 import {errorText} from '../utils/error-text';
 import {SYNC_TICK_EVENT} from '../native/KeepAlive';
+import type {AlertOptions} from '../native/KeepAlive';
 import * as SettingsStore from '../store/settings-store';
 import * as SeenApplicationAlerts from './seen-application-alerts';
+import {
+  DEFAULT_NEW_APPLICATION_SOUND,
+  DEFAULT_OTHER_SOUND,
+  DEFAULT_ALERT_VOLUME,
+} from '../config/constants';
 
 /** Тег диагностического журнала. */
 const TAG = 'realtime';
@@ -430,11 +436,10 @@ interface KeepAliveModule {
   alertNewItem?: (
     title: string,
     body: string,
-    options?: {sound?: boolean; vibration?: boolean; repeatCount?: number},
+    options?: AlertOptions,
     accountId?: string | null,
   ) => void;
-  notify?: (title: string, body: string) => void;
-  notifyTask?: (title: string, body: string) => void;
+  notifyTask?: (title: string, body: string, options?: AlertOptions) => void;
   pulseOverlayWidget?: () => void;
 }
 
@@ -467,6 +472,10 @@ interface NotificationSettings {
   soundEnabled: boolean;
   vibrationEnabled: boolean;
   alertRepeatCount: number;
+  newApplicationSoundId: string;
+  newApplicationVolume: number;
+  otherSoundId: string;
+  otherVolume: number;
   floatingWidgetEnabled: boolean;
 }
 
@@ -483,6 +492,10 @@ const FALLBACK_NOTIFICATION_SETTINGS: NotificationSettings = {
   soundEnabled: true,
   vibrationEnabled: true,
   alertRepeatCount: 1,
+  newApplicationSoundId: DEFAULT_NEW_APPLICATION_SOUND,
+  newApplicationVolume: DEFAULT_ALERT_VOLUME,
+  otherSoundId: DEFAULT_OTHER_SOUND,
+  otherVolume: DEFAULT_ALERT_VOLUME,
   floatingWidgetEnabled: false,
 };
 
@@ -602,11 +615,17 @@ function notifyFromFeedMessage(entry: RealtimeEntry, payload: unknown): void {
     return;
   }
 
-  sendLocalNotification(title, text, entry.account.id);
+  sendLocalNotification(title, text, entry.account.id, kind);
   logDiag(
     TAG,
     `notify account=${maskValue(entry.account.id)} title=${limit(title)} id=${id || '-'}`,
   );
+  if (kind === 'application-new' && isApplication) {
+    const targetId = toText(target === null ? null : target.id);
+    if (targetId !== '') {
+      insertApplicationFromFeed(entry.account, targetId);
+    }
+  }
 }
 
 /** Добавить message.__id в память дедупликации, не держа больше лимита. */
@@ -644,6 +663,22 @@ function readNotificationSettings(): NotificationSettings {
         typeof state.alertRepeatCount === 'number' && Number.isFinite(state.alertRepeatCount)
           ? state.alertRepeatCount
           : FALLBACK_NOTIFICATION_SETTINGS.alertRepeatCount,
+      newApplicationSoundId:
+        typeof state.newApplicationSoundId === 'string' && state.newApplicationSoundId !== ''
+          ? state.newApplicationSoundId
+          : DEFAULT_NEW_APPLICATION_SOUND,
+      newApplicationVolume:
+        typeof state.newApplicationVolume === 'number' && Number.isFinite(state.newApplicationVolume)
+          ? state.newApplicationVolume
+          : DEFAULT_ALERT_VOLUME,
+      otherSoundId:
+        typeof state.otherSoundId === 'string' && state.otherSoundId !== ''
+          ? state.otherSoundId
+          : DEFAULT_OTHER_SOUND,
+      otherVolume:
+        typeof state.otherVolume === 'number' && Number.isFinite(state.otherVolume)
+          ? state.otherVolume
+          : DEFAULT_ALERT_VOLUME,
       floatingWidgetEnabled: state.floatingWidgetEnabled === true,
     };
   } catch {
@@ -713,20 +748,47 @@ function markApplicationFromMessage(accountId: string, message: Record<string, u
 }
 
 /**
+ * Догрузить заявку по id из уведомления, чтобы она появилась в списке сразу.
+ * Ленивый require: customer-service тянет сторы, статический импорт даёт цикл.
+ */
+function insertApplicationFromFeed(account: ElmaAccount, id: string): void {
+  try {
+    const mod = require('./customer-service') as {
+      insertApplicationById?: (acc: ElmaAccount, applicationId: string) => Promise<boolean>;
+    };
+    if (typeof mod.insertApplicationById === 'function') {
+      Promise.resolve(mod.insertApplicationById(account, id)).catch(() => {});
+    }
+  } catch (error) {
+    logDiag(TAG, 'insert-app-failed id=' + id + ' error=' + errorText(error));
+  }
+}
+
+/**
  * Локальное уведомление существующим native-модулем (best-effort):
  * уважает настройки (notificationsEnabled/sound/vibration/repeatCount/floatingWidget);
- * при отсутствии alertNewItem — notify(title, text).
+ * при отсутствии alertNewItem — notifyTask(title, text, опции).
  */
-function sendLocalNotification(title: string, text: string, accountId: string): void {
+function sendLocalNotification(
+  title: string,
+  text: string,
+  accountId: string,
+  kind: NotificationKind,
+): void {
   const settings = readNotificationSettings();
   if (settings.notificationsEnabled === false) {
     logDiag(TAG, `notify-skip reason=disabled account=${maskValue(accountId)}`);
     return;
   }
 
+  // Две группы уведомлений: новая заявка и всё остальное — свой звук и громкость.
+  const isApplicationGroup = kind === 'application-new';
+  const soundId = isApplicationGroup ? settings.newApplicationSoundId : settings.otherSoundId;
+  const volume = isApplicationGroup ? settings.newApplicationVolume : settings.otherVolume;
+
   let keepAlive: KeepAliveModule | null = null;
   try {
-    // Ленивый require остаётся: keepAlive.notify может отсутствовать в экспортах
+    // Ленивый require остаётся: keepAlive.notifyTask может отсутствовать в экспортах
     // модуля (см. KeepAlive.ts) — это проверяется typeof, а тесты проверяют
     // fallback «без alertNewItem», подменяя мок в рантайме. Статический
     // namespace-импорт дал бы снимок модуля и сломал бы эту проверку.
@@ -748,6 +810,8 @@ function sendLocalNotification(title: string, text: string, accountId: string): 
           sound: settings.soundEnabled,
           vibration: settings.vibrationEnabled,
           repeatCount: settings.alertRepeatCount,
+          soundId,
+          volume,
         },
         accountId,
       );
@@ -758,11 +822,13 @@ function sendLocalNotification(title: string, text: string, accountId: string): 
   }
   if (!notified) {
     try {
-      if (typeof keepAlive.notify === 'function') {
-        keepAlive.notify(title, text);
-        notified = true;
-      } else if (typeof keepAlive.notifyTask === 'function') {
-        keepAlive.notifyTask(title, text);
+      if (typeof keepAlive.notifyTask === 'function') {
+        keepAlive.notifyTask(title, text, {
+          sound: settings.soundEnabled,
+          vibration: settings.vibrationEnabled,
+          soundId,
+          volume,
+        });
         notified = true;
       }
     } catch {

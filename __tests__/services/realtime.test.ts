@@ -10,12 +10,18 @@ jest.mock('../../src/diag/accept-log', () => ({
 jest.mock('../../src/native/KeepAlive', () => ({
   SYNC_TICK_EVENT: 'multiElmaSyncTick',
   alertNewItem: jest.fn(),
+  notifyTask: jest.fn(),
   notify: jest.fn(),
   pulseOverlayWidget: jest.fn(),
 }));
 
 jest.mock('../../src/services/applications-sync', () => ({
   refreshApplicationsNow: jest.fn(() => Promise.resolve()),
+}));
+
+// Догрузка заявки по id из feed-уведомления — только проверяем вызовы.
+jest.mock('../../src/services/customer-service', () => ({
+  insertApplicationById: jest.fn(() => Promise.resolve(true)),
 }));
 
 // Настройки уведомлений: мокаем стор, состояние доступно через __state.
@@ -29,6 +35,10 @@ jest.mock('../../src/store/settings-store', () => {
     soundEnabled: true,
     vibrationEnabled: true,
     alertRepeatCount: 1,
+    newApplicationSoundId: 'raw:notification_alert',
+    newApplicationVolume: 10,
+    otherSoundId: 'raw:notification_general',
+    otherVolume: 10,
     floatingWidgetEnabled: false,
   };
   return {useSettingsStore: {getState: jest.fn(() => __state)}, __state};
@@ -182,11 +192,15 @@ const instances = (jest.requireMock('centrifuge') as any).__instances as any[];
 const mockedLogDiag = logDiag as jest.MockedFunction<typeof logDiag>;
 const keepAliveMock = jest.requireMock('../../src/native/KeepAlive') as {
   alertNewItem: jest.Mock;
+  notifyTask: jest.Mock;
   notify: jest.Mock;
   pulseOverlayWidget: jest.Mock;
 };
 const applicationsSyncMock = jest.requireMock('../../src/services/applications-sync') as {
   refreshApplicationsNow: jest.Mock;
+};
+const customerServiceMock = jest.requireMock('../../src/services/customer-service') as {
+  insertApplicationById: jest.Mock;
 };
 const settingsState = (
   jest.requireMock('../../src/store/settings-store') as {__state: Record<string, unknown>}
@@ -207,6 +221,10 @@ const DEFAULT_SETTINGS = {
   soundEnabled: true,
   vibrationEnabled: true,
   alertRepeatCount: 1,
+  newApplicationSoundId: 'raw:notification_alert',
+  newApplicationVolume: 10,
+  otherSoundId: 'raw:notification_general',
+  otherVolume: 10,
   floatingWidgetEnabled: false,
 };
 
@@ -268,9 +286,11 @@ beforeEach(() => {
   mockedLogDiag.mockClear();
   MockWebSocket.lastArgs = null;
   keepAliveMock.alertNewItem.mockClear();
+  keepAliveMock.notifyTask.mockClear();
   keepAliveMock.notify.mockClear();
   keepAliveMock.pulseOverlayWidget.mockClear();
   applicationsSyncMock.refreshApplicationsNow.mockClear();
+  customerServiceMock.insertApplicationById.mockClear();
   seenAlertsMock.loadSeenKeys.mockClear();
   seenAlertsMock.persistSeenKeys.mockClear();
   seenAlertsMock.markSeenApplicationKey.mockClear();
@@ -695,7 +715,7 @@ describe('уведомления feed/target/message', () => {
     expect(keepAliveMock.alertNewItem).toHaveBeenCalledWith(
       'Появилась новая заявка',
       FEED_TEXT,
-      {sound: true, vibration: true, repeatCount: 1},
+      {sound: true, vibration: true, repeatCount: 1, soundId: 'raw:notification_alert', volume: 10},
       'acc-1',
     );
     expect(keepAliveMock.notify).not.toHaveBeenCalled();
@@ -713,7 +733,7 @@ describe('уведомления feed/target/message', () => {
     expect(keepAliveMock.alertNewItem).toHaveBeenCalledTimes(1);
   });
 
-  it('при отсутствии alertNewItem используется notify(title, text)', () => {
+  it('при отсутствии alertNewItem — notifyTask с опциями заявки (звук/вибрация/soundId/volume)', () => {
     const original = keepAliveMock.alertNewItem;
     keepAliveMock.alertNewItem = undefined as unknown as jest.Mock;
     try {
@@ -723,9 +743,40 @@ describe('уведомления feed/target/message', () => {
         payload: {message: {...FEED_MESSAGE, __id: 'msg-fallback'}},
       });
 
-      expect(keepAliveMock.notify).toHaveBeenCalledTimes(1);
-      expect(keepAliveMock.notify).toHaveBeenCalledWith('Появилась новая заявка', FEED_TEXT);
+      expect(keepAliveMock.notifyTask).toHaveBeenCalledTimes(1);
+      expect(keepAliveMock.notifyTask).toHaveBeenCalledWith('Появилась новая заявка', FEED_TEXT, {
+        sound: true,
+        vibration: true,
+        soundId: 'raw:notification_alert',
+        volume: 10,
+      });
+      expect(keepAliveMock.notify).not.toHaveBeenCalled();
       expect(keepAliveMock.alertNewItem).toBeUndefined();
+    } finally {
+      keepAliveMock.alertNewItem = original;
+    }
+  });
+
+  it('фолбэк для «остальных» уведомлений пробрасывает otherSoundId/otherVolume', () => {
+    settingsState.otherSoundId = 'raw:notification_general';
+    settingsState.otherVolume = 5;
+    const original = keepAliveMock.alertNewItem;
+    keepAliveMock.alertNewItem = undefined as unknown as jest.Mock;
+    try {
+      const client = startConnected(makeAccount({id: 'acc-task-fallback'}));
+      publish(client, {
+        event: 'feed/target/message',
+        payload: {message: {...FEED_TASK_MESSAGE, __id: 'msg-task-fallback'}},
+      });
+
+      expect(keepAliveMock.notifyTask).toHaveBeenCalledTimes(1);
+      expect(keepAliveMock.notifyTask).toHaveBeenCalledWith('Новая задача', 'Вам назначена задача № 55', {
+        sound: true,
+        vibration: true,
+        soundId: 'raw:notification_general',
+        volume: 5,
+      });
+      expect(keepAliveMock.notify).not.toHaveBeenCalled();
     } finally {
       keepAliveMock.alertNewItem = original;
     }
@@ -810,6 +861,33 @@ describe('обновление списка по личным событиям �
 
     expect(applicationsSyncMock.refreshApplicationsNow).toHaveBeenCalledTimes(1);
     expect(keepAliveMock.alertNewItem).not.toHaveBeenCalled();
+  });
+
+  it('новая заявка из feed → insertApplicationById с id цели уведомления', async () => {
+    const client = startConnected(makeAccount({id: 'acc-insert-app'}));
+
+    publish(client, {
+      event: 'feed/target/message',
+      payload: {
+        message: {
+          ...FEED_MESSAGE,
+          __id: 'msg-insert-app',
+          target: {
+            namespace: 'customer_service',
+            code: 'applications',
+            id: 'app-1',
+            title: ' 21978',
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(customerServiceMock.insertApplicationById).toHaveBeenCalledTimes(1);
+    expect(customerServiceMock.insertApplicationById).toHaveBeenCalledWith(
+      expect.objectContaining({id: 'acc-insert-app'}),
+      'app-1',
+    );
   });
 
   it('debounce: два подряд события в пределах 2 с → один вызов refreshApplicationsNow', () => {
@@ -938,7 +1016,7 @@ describe('настройки уведомлений realtime', () => {
     expect(keepAliveMock.alertNewItem).toHaveBeenCalledWith(
       'Появилась новая заявка',
       FEED_TEXT,
-      {sound: false, vibration: true, repeatCount: 3},
+      {sound: false, vibration: true, repeatCount: 3, soundId: 'raw:notification_alert', volume: 10},
       'acc-settings',
     );
     expect(keepAliveMock.notify).not.toHaveBeenCalled();

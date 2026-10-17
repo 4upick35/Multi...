@@ -513,7 +513,67 @@ describe('TaskDetailScreen — безопасные действия по вых
     expect(mockedSubmit).toHaveBeenCalledTimes(1);
     const [, , , exitId, values] = mockedSubmit.mock.calls[0];
     expect(exitId).toBe(EXIT_A);
-    expect(values.time_of_visit).toBe(new Date(1970, 0, 1, 19, 30).toISOString());
+    expect(values.time_of_visit).toBe('1970-01-01T19:30:00.000Z');
+  });
+
+  it('DATE-поле: submit уходит с UTC-полночью от ЛОКАЛЬНЫХ компонент даты (tz-независимо)', async () => {
+    mockedExits.mockResolvedValue([
+      {id: EXIT_A, key: 'exit-a', title: 'Выезд согласован'},
+    ]);
+    mockedTemplateExits.mockResolvedValue([
+      {
+        id: EXIT_A,
+        name: 'Выезд согласован',
+        formFields: [
+          {
+            code: 'visit_date',
+            required: true,
+            label: 'Дата визита',
+            type: 'DATE',
+          },
+        ],
+      },
+    ]);
+    mockedSubmit.mockResolvedValue({ok: true});
+    const tree = renderScreen();
+
+    await press(findButton(tree, 'Действия') as PressableNode);
+    await press(findButton(tree, 'Выезд согласован') as PressableNode);
+
+    expect(tree.root.findAllByProps({testID: 'exit-form'}).length).toBeGreaterThan(0);
+    expect(renderedStrings(tree)).toContain('Выбрать дату');
+
+    await press(findButton(tree, 'Выбрать дату') as PressableNode);
+
+    const pickers = tree.root.findAll(n => n.type === 'DateTimePicker');
+    expect(pickers).toHaveLength(1);
+    // DATE открывается дата-пикером (не time-пикером, как time-only поле)
+    expect(pickers[0].props.mode).toBe('date');
+
+    // Локальные компоненты: 15.03.2026 14:30 — в любом поясе они одни и те же
+    await act(async () => {
+      pickers[0].props.onChange({type: 'set'}, new Date(2026, 2, 15, 14, 30));
+    });
+
+    // После даты форма переходит к шагу времени — закрываем его
+    const timeStep = tree.root.findAll(n => n.type === 'DateTimePicker');
+    expect(timeStep).toHaveLength(1);
+    expect(timeStep[0].props.mode).toBe('time');
+    await act(async () => {
+      timeStep[0].props.onChange({type: 'set'}, new Date(2026, 2, 15, 14, 30));
+    });
+    expect(tree.root.findAll(n => n.type === 'DateTimePicker')).toHaveLength(0);
+
+    await press(findButton(tree, 'Отправить') as PressableNode);
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(mockedSubmit).toHaveBeenCalledTimes(1);
+    const [, , , exitId, values] = mockedSubmit.mock.calls[0];
+    expect(exitId).toBe(EXIT_A);
+    // Дата = UTC-полночь от локальных компонент, без сдвига на часовой пояс
+    expect(values.visit_date).toBe('2026-03-15T00:00:00.000Z');
   });
 
   it('предзаполнение STRING из instance: значение уже стоит в форме и уходит на submit', async () => {
@@ -612,7 +672,7 @@ describe('TaskDetailScreen — безопасные действия по вых
 
     expect(mockedSubmit).toHaveBeenCalledTimes(1);
     const values = mockedSubmit.mock.calls[0][4];
-    expect(values.time_of_visit).toBe('1970-01-01T12:00:00.000Z');
+    expect(values.time_of_visit).toBe(`1970-01-01T${shownLocal}:00.000Z`);
   });
 
   it('предзаполнение ENUM из instance: вариант уже выбран и уходит массивом кодов', async () => {

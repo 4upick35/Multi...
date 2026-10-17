@@ -75,7 +75,7 @@ export {
   fetchCollectionItems, searchWorkerQuery, fetchExecutorsByIds,
   fetchUserProfile, fetchWorkerUser, resolveUserNames,
   fetchItemsLinked, fetchFieldPermissions,
-  searchApplicationByNumber, fetchCollectionItemsByIds,
+  searchApplicationByNumber, fetchCollectionItemsByIds, fetchCollectionKeyFields,
 } from '../infrastructure/api/collections';
 export type {LinkedTask, FieldPermissions} from '../infrastructure/api/collections';
 export {

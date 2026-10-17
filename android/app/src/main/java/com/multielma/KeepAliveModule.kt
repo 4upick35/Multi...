@@ -13,8 +13,10 @@ import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -26,6 +28,7 @@ import android.os.VibratorManager
 import android.provider.Settings
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.WebSettings
 import androidx.core.content.FileProvider
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -191,7 +194,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
    * independently of the foreground service. Silently ignores missing permission.
    */
   @ReactMethod
-  fun notify(title: String?, body: String?) {
+  fun notify(title: String?, body: String?, sound: Boolean, vibration: Boolean, soundId: String?, volume: Int) {
     try {
       val context = reactApplicationContext
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -205,6 +208,12 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       }
       ensureChannel(CHANNEL_TASK_ALERTS, CHANNEL_TASK_ALERTS_NAME, NotificationManager.IMPORTANCE_DEFAULT)
       manager.notify(TASK_ALERT_NOTIFICATION_ID, buildNotification(title, body, CHANNEL_TASK_ALERTS))
+      if (vibration) {
+        vibrateAlert()
+      }
+      if (sound) {
+        playSoundOnce(soundId, volume)
+      }
     } catch (t: Throwable) {
       // Best effort: never crash the JS caller because of a notification issue.
     }
@@ -234,6 +243,22 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       promise.resolve(powerManager.isIgnoringBatteryOptimizations(reactApplicationContext.packageName))
     } catch (t: Throwable) {
       promise.reject("BATTERY_OPT_CHECK_FAILED", t)
+    }
+  }
+
+  /**
+   * Синхронно возвращает User-Agent без маркеров WebView (`; wv`, `Version/4.0 `),
+   * чтобы reCAPTCHA в CaptchaModal не видела «webview-сигнатуру» и реже выдавала
+   * challenge. При ошибке — пустая строка (JS тогда не передаёт userAgent).
+   */
+  @ReactMethod(isBlockingSynchronousMethod = true)
+  fun getCaptchaUserAgent(): String {
+    return try {
+      WebSettings.getDefaultUserAgent(reactApplicationContext)
+          .replace("; wv", "")
+          .replace("Version/4.0 ", "")
+    } catch (e: Exception) {
+      ""
     }
   }
 
@@ -318,14 +343,169 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
 
   private var mediaPlayer: MediaPlayer? = null
   private var repeatCountRemaining = 0
-  private var repeatCountTotal = 0
   private val alertHandler = Handler(Looper.getMainLooper())
   private var alertReceiverRegistered = false
   private var currentVibrator: Vibrator? = null
 
+  private var audioFocusRequest: AudioFocusRequest? = null
+  private val alertFocusListener = AudioManager.OnAudioFocusChangeListener { }
+
   private val SAFETY_TIMEOUT_MS = 60_000L
 
   private val safetyStopRunnable = Runnable { stopAlertInternal() }
+
+  /**
+   * Идентификатор звука из настроек -> источник MediaPlayer:
+   *   raw:<имя>  — встроенный ресурс res/raw;
+   *   system     — системный звук уведомлений по умолчанию;
+   *   uri:<uri>  — произвольный content/ringtone-uri;
+   *   пусто/иное — резервный встроенный сигнал.
+   */
+  private fun createAlertPlayer(soundId: String?): MediaPlayer? {
+    val context = reactApplicationContext
+    val fallback = R.raw.notification_alert
+    return try {
+      val spec = soundId?.trim().orEmpty()
+      when {
+        spec.isEmpty() -> MediaPlayer.create(context, fallback)
+        spec.startsWith("raw:") -> {
+          val resId =
+              context.resources.getIdentifier(spec.removePrefix("raw:"), "raw", context.packageName)
+          MediaPlayer.create(context, if (resId != 0) resId else fallback)
+        }
+        spec == "system" ->
+            MediaPlayer.create(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
+        spec.startsWith("uri:") -> MediaPlayer.create(context, Uri.parse(spec.removePrefix("uri:")))
+        else -> MediaPlayer.create(context, fallback)
+      }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  /** Вибрация уведомления; отсутствие разрешения/поддержки игнорируется. */
+  private fun vibrateAlert() {
+    try {
+      val context = reactApplicationContext
+      val pattern = longArrayOf(0, 800, 250, 800, 250, 1200)
+      @Suppress("DEPRECATION")
+      val vibrator: Vibrator? =
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+          } else {
+            context.getSystemService(Vibrator::class.java)
+          }
+      if (vibrator != null && vibrator.hasVibrator()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        } else {
+          @Suppress("DEPRECATION")
+          vibrator.vibrate(pattern, -1)
+        }
+        currentVibrator = vibrator
+      }
+    } catch (_: SecurityException) {
+      // Нет разрешения VIBRATE — пропускаем
+    } catch (_: Throwable) {
+      // Устройство не поддерживает вибрацию
+    }
+  }
+
+  /** Аудио-фокус на время сигнала: музыка приглушается (играем как медиа-поток). */
+  private fun requestAlertAudioFocus(): Boolean {
+    return try {
+      val am = reactApplicationContext.getSystemService(AudioManager::class.java) ?: return false
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build())
+            .setOnAudioFocusChangeListener(alertFocusListener)
+            .build()
+        audioFocusRequest = req
+        am.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      } else {
+        @Suppress("DEPRECATION")
+        am.requestAudioFocus(
+            alertFocusListener,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+      }
+    } catch (_: Throwable) {
+      false
+    }
+  }
+
+  private fun abandonAlertAudioFocus() {
+    try {
+      val am = reactApplicationContext.getSystemService(AudioManager::class.java)
+      if (am != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+        } else {
+          @Suppress("DEPRECATION")
+          am.abandonAudioFocus(alertFocusListener)
+        }
+      }
+    } catch (_: Throwable) {
+      // Ignore
+    }
+    audioFocusRequest = null
+  }
+
+  /** Одиночное воспроизведение выбранного звука (уведомление-задача). */
+  private fun playSoundOnce(soundId: String?, volume: Int) {
+    try {
+      stopAlertInternal()
+      val mp = createAlertPlayer(soundId) ?: return
+      prepareAlertPlayer(mp, volume)
+      mp.setOnCompletionListener { stopAlertInternal() }
+      requestAlertAudioFocus()
+      mp.start()
+      mediaPlayer = mp
+      alertHandler.removeCallbacks(safetyStopRunnable)
+      alertHandler.postDelayed(safetyStopRunnable, SAFETY_TIMEOUT_MS)
+    } catch (_: Throwable) {
+      // Звук недоступен
+    }
+  }
+
+  /** Общая подготовка плеера: аудио-поток уведомления и громкость 0..10. */
+  private fun prepareAlertPlayer(mp: MediaPlayer, volume: Int) {
+    mp.setAudioAttributes(
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build())
+    val level = volume.coerceIn(0, 10) / 10f
+    mp.setVolume(level, level)
+  }
+
+  /**
+   * Проиграть выбранный звук один раз — предпрослушивание в настройках.
+   * Отдельный временный плеер: активный сигнал (`mediaPlayer`, safety-timer)
+   * не останавливается и не перезаписывается.
+   */
+  @ReactMethod
+  fun previewAlertSound(soundId: String?, volume: Int) {
+    try {
+      val mp = createAlertPlayer(soundId) ?: return
+      prepareAlertPlayer(mp, volume)
+      mp.setOnCompletionListener {
+        try {
+          it.release()
+        } catch (_: Throwable) {
+          // Ignore
+        }
+      }
+      requestAlertAudioFocus()
+      mp.start()
+    } catch (_: Throwable) {
+      // Звук недоступен
+    }
+  }
 
   /** BroadcastReceiver для остановки звука при тапе (contentIntent) и смахивании (deleteIntent). */
   private val alertStopReceiver = object : BroadcastReceiver() {
@@ -335,10 +515,8 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun alertNewItem(title: String?, body: String?, sound: Boolean, vibration: Boolean, repeatCount: Int, accountId: String?) {
+  fun alertNewItem(title: String?, body: String?, sound: Boolean, vibration: Boolean, repeatCount: Int, accountId: String?, soundId: String?, volume: Int) {
     try {
-      val context = reactApplicationContext
-
       // Останавливаем предыдущий звук/вибрацию перед запуском нового
       stopAlertInternal()
 
@@ -346,51 +524,22 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
 
       // --- Вибрация ---
       if (vibration) {
-        try {
-          val pattern = longArrayOf(0, 800, 250, 800, 250, 1200)
-          @Suppress("DEPRECATION")
-          val vibrator: Vibrator? =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-              context.getSystemService(VibratorManager::class.java)?.defaultVibrator
-            } else {
-              context.getSystemService(Vibrator::class.java)
-            }
-          if (vibrator != null && vibrator.hasVibrator()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-              vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
-            } else {
-              @Suppress("DEPRECATION")
-              vibrator.vibrate(pattern, -1)
-            }
-            currentVibrator = vibrator
-          }
-        } catch (_: SecurityException) {
-          // Нет разрешения VIBRATE — пропускаем
-        } catch (_: Throwable) {
-          // Устройство не поддерживает вибрацию
-        }
+        vibrateAlert()
       }
 
-      // --- Звук через MediaPlayer (R.raw.notification_alert) ---
+      // --- Звук через MediaPlayer (звук выбирается в настройках) ---
       if (sound) {
         try {
-          val audioManager = context.getSystemService(AudioManager::class.java)
-          if (audioManager != null) {
-            audioManager.setStreamVolume(
-              AudioManager.STREAM_ALARM,
-              audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM),
-              0,
-            )
-          }
           val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
-          val mp = MediaPlayer.create(context, R.raw.notification_alert)
+          val mp = createAlertPlayer(soundId)
           if (mp != null) {
+            val level = volume.coerceIn(0, 10) / 10f
             mp.setAudioAttributes(attrs)
+            mp.setVolume(level, level)
             mp.isLooping = true
-            repeatCountTotal = safeRepeat
             repeatCountRemaining = safeRepeat
             mp.setOnCompletionListener {
               repeatCountRemaining--
@@ -405,6 +554,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
                 stopAlertInternal()
               }
             }
+            requestAlertAudioFocus()
             mp.start()
             mediaPlayer = mp
             // Страховочный таймаут
@@ -416,7 +566,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
         }
       }
 
-      // --- Уведомление на канале application_alerts_v2 ---
+      // --- Уведомление на канале application_alerts_v3 ---
       publishApplicationAlert(title, body, accountId)
     } catch (_: Throwable) {
       // Best effort: never crash JS
@@ -443,9 +593,10 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       }
       mediaPlayer = null
       repeatCountRemaining = 0
-      repeatCountTotal = 0
+      currentVibrator?.cancel()
       currentVibrator = null
       unregisterAlertReceiver()
+      abandonAlertAudioFocus()
     } catch (_: Throwable) {
       // Ignore
     }
@@ -484,7 +635,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       if (!manager.areNotificationsEnabled()) {
         return
       }
-      ensureChannel(CHANNEL_APPLICATION_ALERTS_V2, CHANNEL_APPLICATION_ALERTS_V2_NAME, NotificationManager.IMPORTANCE_HIGH)
+      ensureChannel(CHANNEL_APPLICATION_ALERTS, CHANNEL_APPLICATION_ALERTS_NAME, NotificationManager.IMPORTANCE_HIGH)
 
       // Регистрируем receiver для обработки смахивания
       registerAlertReceiver()
@@ -514,7 +665,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
 
       val builder =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-          Notification.Builder(context, CHANNEL_APPLICATION_ALERTS_V2)
+          Notification.Builder(context, CHANNEL_APPLICATION_ALERTS)
         } else {
           Notification.Builder(context)
         }
@@ -539,7 +690,34 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
     }
     val manager = reactApplicationContext.getSystemService(NotificationManager::class.java) ?: return
     if (manager.getNotificationChannel(channelId) == null) {
-      manager.createNotificationChannel(NotificationChannel(channelId, channelName, importance))
+      val channel = NotificationChannel(channelId, channelName, importance)
+      // Звук и вибрацию воспроизводим сами (MediaPlayer/Vibrator), чтобы их можно было
+      // регулировать из приложения; канал держим «тихим», иначе сигнал звучал бы дважды.
+      channel.setSound(null, null)
+      channel.enableVibration(false)
+      manager.createNotificationChannel(channel)
+      // После бампа id старые каналы остаются висеть в системных настройках — чистим их.
+      deleteLegacyChannels(manager, channelId)
+    }
+  }
+
+  /**
+   * Удаляет устаревшие каналы (старые id после бампа), чтобы они не висели в
+   * системных настройках. Текущий канал [currentChannelId] не трогаем.
+   */
+  private fun deleteLegacyChannels(manager: NotificationManager, currentChannelId: String) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+      return
+    }
+    for (id in LEGACY_CHANNEL_IDS) {
+      if (id == currentChannelId) {
+        continue
+      }
+      try {
+        manager.deleteNotificationChannel(id)
+      } catch (_: Throwable) {
+        // Best effort: не мешаем показу уведомления из-за чистки каналов
+      }
     }
   }
 
@@ -753,13 +931,15 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
     var instance: KeepAliveModule? = null
       private set
     const val CHANNEL_BACKGROUND_SYNC = "background_sync"
-    const val CHANNEL_TASK_ALERTS = "task_alerts"
+    const val CHANNEL_TASK_ALERTS = "task_alerts_v2"
     private const val CHANNEL_BACKGROUND_SYNC_NAME = "Background sync"
     private const val CHANNEL_TASK_ALERTS_NAME = "Task alerts"
     private const val TASK_ALERT_NOTIFICATION_ID = 2
     private const val DEFAULT_TITLE = "MultiElma"
-    private const val CHANNEL_APPLICATION_ALERTS_V2 = "application_alerts_v2"
-    private const val CHANNEL_APPLICATION_ALERTS_V2_NAME = "Application alerts"
+    private const val CHANNEL_APPLICATION_ALERTS = "application_alerts_v3"
+    private const val CHANNEL_APPLICATION_ALERTS_NAME = "Application alerts"
+    /** Старые id каналов, оставшиеся после бампа — удаляются при создании нового канала. */
+    private val LEGACY_CHANNEL_IDS = listOf("task_alerts", "application_alerts_v2")
     private const val APPLICATION_ALERT_NOTIFICATION_ID = 3
     private const val ACTION_ALERT_STOP = "com.multielma.ACTION_ALERT_STOP"
     private const val EVENT_NAVIGATION = "multiElmaNavigate"

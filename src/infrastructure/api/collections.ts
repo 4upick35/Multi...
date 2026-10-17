@@ -436,3 +436,29 @@ export async function fetchCollectionItemsByIds(
     return {items: []};
   }
 }
+
+// ---------------------------------------------------------------------------
+// Public API: fetchCollectionKeyFields — POST .../items/keyfields
+// Быстрый резолв отображаемых имён ссылок (__name) по списку UUID.
+// Работает даже для коллекций, недоступных через items/list.
+// ---------------------------------------------------------------------------
+
+export async function fetchCollectionKeyFields(
+  account: ElmaAccount,
+  namespace: string,
+  code: string,
+  ids: string[],
+): Promise<{items: unknown[]; updatedAccount?: Partial<ElmaAccount>}> {
+  if (ids.length === 0) {
+    return {items: []};
+  }
+  const url = `/api/apps/${namespace}/${code}/items/keyfields`;
+  try {
+    const {data, updatedAccount} = await makeRequest(account, 'post', url, {ids, active: false});
+    const resp = data as {result?: unknown[]} | undefined;
+    const arr = Array.isArray(data) ? data : (resp?.result || []);
+    return {items: arr, updatedAccount};
+  } catch {
+    return {items: []};
+  }
+}

@@ -1,6 +1,7 @@
 jest.mock('../../src/services/elma-api', () => ({
   fetchAppMetadata: jest.fn(),
   fetchCollectionItemsByIds: jest.fn(),
+  fetchCollectionKeyFields: jest.fn(),
 }));
 
 jest.mock('../../src/infrastructure/elma-cache', () => {
@@ -28,11 +29,13 @@ import {
 import {
   fetchAppMetadata,
   fetchCollectionItemsByIds,
+  fetchCollectionKeyFields,
 } from '../../src/services/elma-api';
 import type {ElmaAccount} from '../../src/types/account';
 
 const mockedFetchAppMetadata = fetchAppMetadata as jest.MockedFunction<typeof fetchAppMetadata>;
 const mockedFetchCollectionItemsByIds = fetchCollectionItemsByIds as jest.MockedFunction<typeof fetchCollectionItemsByIds>;
+const mockedFetchCollectionKeyFields = fetchCollectionKeyFields as jest.MockedFunction<typeof fetchCollectionKeyFields>;
 
 function makeAccount(overrides: Partial<ElmaAccount> = {}): ElmaAccount {
   return {
@@ -50,6 +53,8 @@ function makeAccount(overrides: Partial<ElmaAccount> = {}): ElmaAccount {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // По умолчанию keyfields ничего не вернул — resolveRefNames уходит в items/list
+  mockedFetchCollectionKeyFields.mockResolvedValue({items: []});
   // Очищаем мок-кэш между тестами
   const store = (jest.requireMock('../../src/infrastructure/elma-cache') as Record<string, unknown>).__store as Map<string, unknown>;
   store.clear();
@@ -326,5 +331,76 @@ describe('resolveRefNames', () => {
     const second = await resolveRefNames(account, raw as Record<string, unknown>, fieldMap);
     expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
     expect(second.get('technic')).toBe('Стиральная машина Bosch');
+  });
+
+  it('частичный ответ keyfields → в items/list уходят только реально недостающие id', async () => {
+    const account = makeAccount();
+    const idA = '019c5190-269a-7b01-9a58-120b2ccd953a';
+    const idB = '019e6b99-acb5-7b7c-8279-4e5d3c3236a7';
+    const fieldMap = new Map([
+      ['technic', {namespace: 'customer_service', code: 'directory_of_nomenclature'}],
+    ]);
+    const raw = {technic: [idA, idB]};
+
+    mockedFetchCollectionKeyFields.mockResolvedValue({
+      items: [{__id: idA, __name: 'Bosch'}],
+    });
+    mockedFetchCollectionItemsByIds.mockResolvedValue({
+      items: [{__id: idB, __name: 'Indesit'}],
+    });
+
+    const resolved = await resolveRefNames(account, raw as Record<string, unknown>, fieldMap);
+    expect(resolved.get('technic')).toBe('Bosch, Indesit');
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledWith(
+      account,
+      'customer_service',
+      'directory_of_nomenclature',
+      [idB],
+    );
+  });
+
+  it('ошибка keyfields → фолбэк в items/list', async () => {
+    const account = makeAccount();
+    const idA = '019c5190-269a-7b01-9a58-120b2ccd953a';
+    const fieldMap = new Map([
+      ['technic', {namespace: 'customer_service', code: 'directory_of_nomenclature'}],
+    ]);
+    const raw = {technic: [idA]};
+
+    mockedFetchCollectionKeyFields.mockRejectedValue(new Error('keyfields boom'));
+    mockedFetchCollectionItemsByIds.mockResolvedValue({
+      items: [{__id: idA, __name: 'Bosch'}],
+    });
+
+    const resolved = await resolveRefNames(account, raw as Record<string, unknown>, fieldMap);
+    expect(resolved.get('technic')).toBe('Bosch');
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledWith(
+      account,
+      'customer_service',
+      'directory_of_nomenclature',
+      [idA],
+    );
+  });
+
+  it('негативный кэш: после первого пустого keyfields повторный вызов не дёргает keyfields', async () => {
+    const account = makeAccount();
+    const idA = '019c5190-269a-7b01-9a58-120b2ccd953a';
+    const fieldMap = new Map([
+      ['technic', {namespace: 'customer_service', code: 'directory_of_nomenclature'}],
+    ]);
+    const raw = {technic: [idA]};
+
+    mockedFetchCollectionKeyFields.mockResolvedValue({items: []});
+    mockedFetchCollectionItemsByIds.mockResolvedValue({items: []});
+
+    await resolveRefNames(account, raw as Record<string, unknown>, fieldMap);
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
+
+    await resolveRefNames(account, raw as Record<string, unknown>, fieldMap);
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(2);
   });
 });

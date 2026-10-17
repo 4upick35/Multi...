@@ -29,6 +29,8 @@ export interface AlertSettings {
   soundEnabled: boolean;
   vibrationEnabled: boolean;
   alertRepeatCount: number;
+  newApplicationSoundId: string;
+  newApplicationVolume: number;
   floatingWidgetEnabled: boolean;
 }
 
@@ -148,7 +150,7 @@ export function useApplicationAlerts(): void {
     // require — статический импорт загрузил бы мок до их инициализации (undefined).
     // Циклической зависимости нет, ленивость сохранена ради поведения тестов.
     const keepAliveMod = require('../native/KeepAlive') as {
-      alertNewItem?: (title: string, body: string, options?: {sound?: boolean; vibration?: boolean; repeatCount?: number}, accountId?: string | null) => void;
+      alertNewItem?: (title: string, body: string, options?: {sound?: boolean; vibration?: boolean; repeatCount?: number; soundId?: string; volume?: number}, accountId?: string | null) => void;
       pulseOverlayWidget?: () => void;
     };
 
@@ -164,6 +166,8 @@ export function useApplicationAlerts(): void {
             sound: settings.soundEnabled,
             vibration: settings.vibrationEnabled,
             repeatCount: settings.alertRepeatCount,
+            soundId: settings.newApplicationSoundId,
+            volume: settings.newApplicationVolume,
           }, accountId);
         }
       } catch {

@@ -8,9 +8,11 @@
 
 import {ElmaAccount} from '../types/account';
 import {cacheGet, cacheSet, TTL_30MIN_MS} from '../infrastructure/elma-cache';
+import {logDiag} from '../diag/accept-log';
 import {
   fetchAppMetadata as apiFetchAppMetadata,
   fetchCollectionItemsByIds,
+  fetchCollectionKeyFields,
   AppStatusDesc,
   AppFieldMeta,
 } from './elma-api';
@@ -208,10 +210,9 @@ export async function resolveRefNames(
 
     // Запрашиваем только те id, которых нет в кэше; если таких нет — без запроса.
     if (missingIds.length > 0) {
-      try {
-        const result = await fetchCollectionItemsByIds(account, namespace, code, missingIds);
+      const applyNames = (items: unknown[]): boolean => {
         let hasNew = false;
-        for (const item of result.items) {
+        for (const item of items) {
           const obj = item as Record<string, unknown>;
           const id = (obj.__id as string) || (obj.id as string);
           const name = (obj.__name as string) || (obj.name as string) || (obj.Name as string);
@@ -220,12 +221,45 @@ export async function resolveRefNames(
             hasNew = true;
           }
         }
-        if (hasNew) {
-          cacheSet(account.id, cacheKey, idToName, TTL_30MIN_MS);
+        return hasNew;
+      };
+
+      let hasNew = false;
+      const negCacheKey = `app_metadata::keyfieldsNeg::${targetKey}`;
+      const keyfieldsNeg = !!cacheGet<boolean>(account.id, negCacheKey);
+      if (!keyfieldsNeg) {
+        try {
+          // keyfields отдаёт имена даже там, где items/list закрыт (403, например contracts).
+          const keyItems = (await fetchCollectionKeyFields(account, namespace, code, missingIds)).items;
+          hasNew = applyNames(keyItems);
+        } catch {
+          hasNew = false;
         }
-      } catch {
-        // При ошибке — не заполняем, поле останется пустым
-        continue;
+        logDiag('refnames', `src=keyfields coll=${targetKey} new=${hasNew}`);
+        if (!hasNew) {
+          // Ключевой путь не даёт имён — на TTL запоминаем и уходим в items/list.
+          cacheSet(account.id, negCacheKey, true, TTL_30MIN_MS);
+        }
+      }
+
+      const stillMissing = missingIds.filter(id => !(id in idToName));
+      if (stillMissing.length > 0) {
+        logDiag(
+          'refnames',
+          `src=items/list coll=${targetKey} missing=${stillMissing.length}${keyfieldsNeg ? ' neg-cache' : ''}`,
+        );
+        try {
+          hasNew =
+            applyNames(
+              (await fetchCollectionItemsByIds(account, namespace, code, stillMissing)).items,
+            ) || hasNew;
+        } catch {
+          // При ошибке — не заполняем, поле останется пустым
+        }
+      }
+
+      if (hasNew) {
+        cacheSet(account.id, cacheKey, idToName, TTL_30MIN_MS);
       }
     }
 

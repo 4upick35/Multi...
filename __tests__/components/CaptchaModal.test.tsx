@@ -24,10 +24,16 @@ jest.mock('../../src/diag/accept-log', () => ({
   shareCookieBank: jest.fn(() => Promise.resolve()),
 }));
 
+jest.mock('../../src/native/KeepAlive', () => ({
+  getCaptchaUserAgent: jest.fn(() => ''),
+}));
+
 import CaptchaModal from '../../src/components/CaptchaModal';
 import {logDiag} from '../../src/diag/accept-log';
+import {getCaptchaUserAgent} from '../../src/native/KeepAlive';
 
 const mockLogDiag = logDiag as jest.MockedFunction<typeof logDiag>;
+const mockGetCaptchaUserAgent = getCaptchaUserAgent as jest.MockedFunction<typeof getCaptchaUserAgent>;
 
 const onSuccess = jest.fn();
 const onExpired = jest.fn();
@@ -135,5 +141,37 @@ describe('CaptchaModal — handleMessage', () => {
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
     expect(onExpired).not.toHaveBeenCalled();
+  });
+});
+
+describe('CaptchaModal — userAgent WebView', () => {
+  it('передаёт userAgent, если нативная обёртка вернула непустую строку', () => {
+    mockGetCaptchaUserAgent.mockReturnValue(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 7) Chrome/120.0.0.0 Mobile Safari/537.36',
+    );
+
+    const tree = renderModal();
+    const webview = tree.root.findByType(WebView);
+
+    expect(webview.props.userAgent).toBe(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 7) Chrome/120.0.0.0 Mobile Safari/537.36',
+    );
+  });
+
+  it('не передаёт userAgent при пустой строке', () => {
+    mockGetCaptchaUserAgent.mockReturnValue('');
+
+    const tree = renderModal();
+    const webview = tree.root.findByType(WebView);
+
+    expect(webview.props.userAgent).toBeUndefined();
+  });
+
+  it('явно задаёт incognito={false} и cacheMode=LOAD_DEFAULT', () => {
+    const tree = renderModal();
+    const webview = tree.root.findByType(WebView);
+
+    expect(webview.props.incognito).toBe(false);
+    expect(webview.props.cacheMode).toBe('LOAD_DEFAULT');
   });
 });

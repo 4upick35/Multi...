@@ -1,9 +1,10 @@
-import React, {useCallback, useMemo, useRef} from 'react';
+import React, {useCallback, useMemo, useRef, useState} from 'react';
 import {Modal, View, StyleSheet, TouchableOpacity, Text} from 'react-native';
 import WebView, {type WebViewMessageEvent} from 'react-native-webview';
 import {normalizeBaseUrl} from '../utils/url';
 import {useAppTheme} from '../theme';
 import {logDiag} from '../diag/accept-log';
+import {getCaptchaUserAgent} from '../native/KeepAlive';
 import {buildCaptchaHtml} from './captcha-html';
 
 type CaptchaModalProps = {
@@ -31,6 +32,10 @@ export default function CaptchaModal({
   onCancel,
 }: CaptchaModalProps) {
   const webViewRef = useRef<WebView>(null);
+
+  // UA без "; wv"/"Version/4.0 " — снижает шанс image-challenge у reCAPTCHA.
+  // Читаем один раз (лениво); пустая строка → проп userAgent не передаётся.
+  const [captchaUserAgent] = useState(() => getCaptchaUserAgent());
 
   const {colors} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -101,6 +106,9 @@ export default function CaptchaModal({
             setSupportMultipleWindows={false}
             javaScriptCanOpenWindowsAutomatically={false}
             cacheEnabled
+            cacheMode="LOAD_DEFAULT"
+            incognito={false}
+            {...(captchaUserAgent ? {userAgent: captchaUserAgent} : {})}
             originWhitelist={['https://www.google.com', 'https://www.gstatic.com']}
             allowFileAccess={false}
             allowFileAccessFromFileURLs={false}

@@ -1,6 +1,7 @@
 jest.mock('../../src/services/elma-api', () => ({
   fetchAppMetadata: jest.fn(),
   fetchCollectionItemsByIds: jest.fn(),
+  fetchCollectionKeyFields: jest.fn(),
 }));
 
 jest.mock('../../src/infrastructure/elma-cache', () => {
@@ -18,12 +19,14 @@ jest.mock('../../src/infrastructure/elma-cache', () => {
 });
 
 import {resolveRefNames, FieldCollectionTarget} from '../../src/services/app-metadata';
-import {fetchCollectionItemsByIds} from '../../src/services/elma-api';
+import {fetchCollectionItemsByIds, fetchCollectionKeyFields} from '../../src/services/elma-api';
 import {getExtraFields} from '../../src/utils/collection-fields';
 import type {ElmaAccount} from '../../src/types/account';
 
 const mockedFetchCollectionItemsByIds =
   fetchCollectionItemsByIds as jest.MockedFunction<typeof fetchCollectionItemsByIds>;
+const mockedFetchCollectionKeyFields =
+  fetchCollectionKeyFields as jest.MockedFunction<typeof fetchCollectionKeyFields>;
 
 const SERVICE_ID = '019e6b99-acb5-7b7c-8279-4e5d3c3236a7';
 const SERVICE_ID_2 = '019c5190-269a-7b01-9a58-120b2ccd953a';
@@ -50,6 +53,8 @@ function serviceFieldMap(): Map<string, FieldCollectionTarget> {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // По умолчанию keyfields ничего не вернул — resolveRefNames уходит в items/list
+  mockedFetchCollectionKeyFields.mockResolvedValue({items: []});
   const store = (jest.requireMock('../../src/infrastructure/elma-cache') as Record<string, unknown>)
     .__store as Map<string, unknown>;
   store.clear();
@@ -190,5 +195,107 @@ describe('resolveRefNames: массив UUID', () => {
     expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
     expect(resolved.get('service')).toBe('Ремонт СМА');
     expect(resolved.get('contract')).toBe('Договор №12');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// keyfields — основной путь, items/list — фолбэк
+// ---------------------------------------------------------------------------
+describe('resolveRefNames: keyfields', () => {
+  it('резолвит через keyfields и не ходит в items/list', async () => {
+    const account = makeAccount();
+    const raw = {service: SERVICE_ID};
+
+    mockedFetchCollectionKeyFields.mockResolvedValue({
+      items: [{__id: SERVICE_ID, __name: 'Ремонт СМА'}],
+    });
+
+    const resolved = await resolveRefNames(account, raw, serviceFieldMap());
+    expect(resolved.get('service')).toBe('Ремонт СМА');
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledWith(
+      account,
+      'customer_service',
+      'services',
+      [SERVICE_ID],
+    );
+    expect(mockedFetchCollectionItemsByIds).not.toHaveBeenCalled();
+  });
+
+  it('keyfields не дал ни одного имени → фолбэк в items/list', async () => {
+    const account = makeAccount();
+    const raw = {service: SERVICE_ID};
+
+    mockedFetchCollectionKeyFields.mockResolvedValue({items: [{__id: SERVICE_ID}]});
+    mockedFetchCollectionItemsByIds.mockResolvedValue({
+      items: [{__id: SERVICE_ID, __name: 'Ремонт СМА'}],
+    });
+
+    const resolved = await resolveRefNames(account, raw, serviceFieldMap());
+    expect(resolved.get('service')).toBe('Ремонт СМА');
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
+  });
+
+  it('keyfields вернул имена частично → в items/list уходят только отсутствующие id', async () => {
+    const account = makeAccount();
+    const raw = {service: [SERVICE_ID, SERVICE_ID_2]};
+
+    mockedFetchCollectionKeyFields.mockResolvedValue({
+      items: [{__id: SERVICE_ID, __name: 'Ремонт СМА'}],
+    });
+    mockedFetchCollectionItemsByIds.mockResolvedValue({
+      items: [{__id: SERVICE_ID_2, __name: 'Диагностика'}],
+    });
+
+    const resolved = await resolveRefNames(account, raw, serviceFieldMap());
+    expect(resolved.get('service')).toBe('Ремонт СМА, Диагностика');
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledWith(
+      account,
+      'customer_service',
+      'services',
+      [SERVICE_ID_2],
+    );
+  });
+
+  it('keyfields бросил ошибку → идёт items/list', async () => {
+    const account = makeAccount();
+    const raw = {service: SERVICE_ID};
+
+    mockedFetchCollectionKeyFields.mockRejectedValue(new Error('keyfields boom'));
+    mockedFetchCollectionItemsByIds.mockResolvedValue({
+      items: [{__id: SERVICE_ID, __name: 'Ремонт СМА'}],
+    });
+
+    const resolved = await resolveRefNames(account, raw, serviceFieldMap());
+    expect(resolved.get('service')).toBe('Ремонт СМА');
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledWith(
+      account,
+      'customer_service',
+      'services',
+      [SERVICE_ID],
+    );
+  });
+
+  it('негативный кэш: после пустого keyfields повторный вызов не дёргает keyfields и идёт в items/list', async () => {
+    const account = makeAccount();
+    const raw = {service: SERVICE_ID};
+
+    mockedFetchCollectionKeyFields.mockResolvedValue({items: []});
+    mockedFetchCollectionItemsByIds.mockResolvedValue({items: []});
+
+    await resolveRefNames(account, raw, serviceFieldMap());
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(1);
+
+    await resolveRefNames(account, raw, serviceFieldMap());
+    expect(mockedFetchCollectionKeyFields).toHaveBeenCalledTimes(1);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenCalledTimes(2);
+    expect(mockedFetchCollectionItemsByIds).toHaveBeenLastCalledWith(
+      account,
+      'customer_service',
+      'services',
+      [SERVICE_ID],
+    );
   });
 });

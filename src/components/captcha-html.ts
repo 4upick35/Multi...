@@ -83,22 +83,40 @@ export function buildCaptchaHtml(siteKey: string, origin: string): string {
       setTimeout(renderCaptcha, 250);
       return;
     }
-    try {
-      grecaptcha.render('captcha-container', {
-        sitekey: SITEKEY,
-        callback: function(token) { diag('token: получен, длина ' + String(token).length, ts()); post('success', token); },
-        'expired-callback': function() { diag('token: истёк', ts()); post('expired'); },
-        'error-callback': function() { diag('widget: error-callback', ts()); post('error', 'reCAPTCHA widget error'); }
-      });
-      // Скрываем статус, чтобы не мешать самой капче
-      statusEl.style.display = 'none';
-      diag('widget: отрендерен', ts());
-      post('loaded');
-    } catch(e) {
-      var msg = 'Ошибка render: ' + (e && e.message ? e.message : e) + ' (key=' + SITEKEY.substring(0,8) + '…)';
-      setStatus(msg, 'err');
-      appendMeta();
-      post('error', msg);
+    var doRender = function() {
+      try {
+        var widgetId = grecaptcha.render('captcha-container', {
+          sitekey: SITEKEY,
+          callback: function(token) { diag('token: получен, длина ' + String(token).length, ts()); post('success', token); },
+          'expired-callback': function() { diag('token: истёк', ts()); post('expired'); },
+          'error-callback': function() { diag('widget: error-callback', ts()); post('error', 'reCAPTCHA widget error'); }
+        });
+        // Скрываем статус, чтобы не мешать самой капче
+        statusEl.style.display = 'none';
+        diag('widget: отрендерен', ts());
+        post('loaded');
+        // Попытка пройти без клика: если Google доверяет сессии — execute сразу
+        // вернёт токен в существующий callback; иначе виджет остаётся как есть.
+        try {
+          if (grecaptcha.execute) {
+            var execPromise = grecaptcha.execute(widgetId);
+            if (execPromise && execPromise.catch) { execPromise.catch(function() {}); }
+            diag('execute: вызван', ts());
+          }
+        } catch (execErr) {
+          diag('execute: ошибка', String(execErr));
+        }
+      } catch(e) {
+        var msg = 'Ошибка render: ' + (e && e.message ? e.message : e) + ' (key=' + SITEKEY.substring(0,8) + '…)';
+        setStatus(msg, 'err');
+        appendMeta();
+        post('error', msg);
+      }
+    };
+    if (typeof grecaptcha.ready === 'function') {
+      grecaptcha.ready(doRender);
+    } else {
+      doRender();
     }
   }
 

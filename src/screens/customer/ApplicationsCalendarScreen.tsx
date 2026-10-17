@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {View, StyleSheet, ScrollView, TouchableOpacity, Modal, FlatList, PanResponder} from 'react-native';
+import {View, StyleSheet, ScrollView, TouchableOpacity, Modal, FlatList, PanResponder, Animated} from 'react-native';
 import {Text, Chip} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BackButton from '../../components/BackButton';
@@ -9,6 +9,7 @@ import {useCustomerServiceStore} from '../../store/customer-service-store';
 import {CollectionItem} from '../../types/customer-service';
 import {buildShortAddress} from '../../utils/collection-fields';
 import {contrastText} from '../../utils/color';
+import {computeSnap} from '../../utils/calendar-snap';
 
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
 
@@ -22,6 +23,7 @@ type Slot = {title: string; items: Entry[]};
 
 const HOUR_H = 56;
 const TIME_W = 54;
+const DAY_BUFFER = 10;
 const PERIODS = [1, 3, 7] as const;
 type Period = (typeof PERIODS)[number];
 const PERIOD_LABELS: Record<Period, string> = {1: '1 день', 3: '3 дня', 7: '7 дней'};
@@ -46,12 +48,29 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
   const [bodyW, setBodyW] = useState(0);
   const [slot, setSlot] = useState<Slot | null>(null);
+  const [nowMinutes, setNowMinutes] = useState(() => {
+    const n = new Date();
+    return n.getHours() * 60 + n.getMinutes();
+  });
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const n = new Date();
+      setNowMinutes(n.getHours() * 60 + n.getMinutes());
+    }, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   const scrollRef = useRef<ScrollView>(null);
+  const slideX = useRef(new Animated.Value(0)).current;
+  const slideRef = useRef(0);
+  const dragStartRef = useRef(0);
+  const animatingRef = useRef(false);
 
-  const days = useMemo(() => {
+  // Полоса дней с буфером: индекс DAY_BUFFER в stripDays — левая видимая колонка в базе.
+  const stripDays = useMemo(() => {
     const arr: Date[] = [];
-    for (let i = 0; i < period; i += 1) {
+    for (let i = -DAY_BUFFER; i < period + DAY_BUFFER; i += 1) {
       arr.push(addDays(anchor, i));
     }
     return arr;
@@ -84,11 +103,11 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
 
   const slots = useMemo(() => {
     const map = new Map<string, Entry[]>();
-    if (days.length === 0) {
+    if (stripDays.length === 0) {
       return map;
     }
-    const base = startOfDay(days[0]).getTime();
-    const last = startOfDay(days[days.length - 1]).getTime();
+    const base = startOfDay(stripDays[0]).getTime();
+    const last = startOfDay(stripDays[stripDays.length - 1]).getTime();
     entries.forEach(entry => {
       const dayTime = startOfDay(entry.date).getTime();
       if (dayTime < base || dayTime > last) {
@@ -104,19 +123,67 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
       }
     });
     return map;
-  }, [entries, days]);
+  }, [entries, stripDays]);
 
   const dayW = bodyW > 0 ? (bodyW - TIME_W) / period : 0;
   const isEmpty = slots.size === 0;
   const todayKey = startOfDay(new Date()).getTime();
 
-  const shift = useCallback((delta: number) => {
-    setAnchor(prev => addDays(prev, delta));
-  }, []);
+  // При смене ширины колонки (период/раскладка) без анимации возвращаемся в базу.
+  // Идущую анимацию останавливаем: её callback замкнут на старый dayW и иначе
+  // вернёт slideRef/anchor со старым смещением (рассинхрон и двойной сдвиг).
+  useEffect(() => {
+    if (dayW <= 0) {
+      return;
+    }
+    slideX.stopAnimation(() => {});
+    animatingRef.current = false;
+    slideRef.current = -(DAY_BUFFER * dayW);
+    slideX.setValue(slideRef.current);
+  }, [dayW, slideX]);
+
+  /** Сдвиг на delta дней с плавной анимацией и сбросом в базу полосы. */
+  const goDays = useCallback(
+    (delta: number) => {
+      if (delta === 0 || animatingRef.current) {
+        return;
+      }
+      if (dayW <= 0) {
+        setAnchor(prev => addDays(prev, delta));
+        return;
+      }
+      animatingRef.current = true;
+      Animated.timing(slideX, {
+        toValue: -(DAY_BUFFER + delta) * dayW,
+        duration: 200,
+        useNativeDriver: true,
+      }).start(({finished}) => {
+        // Прерванную анимацию (resetToday/смена dayW) не применяем: её callback
+        // замкнут на старый dayW и сдвинул бы anchor поверх сброса.
+        if (!finished) {
+          animatingRef.current = false;
+          return;
+        }
+        setAnchor(prev => addDays(prev, delta));
+        slideRef.current = -(DAY_BUFFER * dayW);
+        slideX.setValue(slideRef.current);
+        animatingRef.current = false;
+      });
+    },
+    [dayW, slideX],
+  );
 
   const resetToday = useCallback(() => {
+    // Сначала гасим идущую анимацию — иначе её callback позже выполнит
+    // setAnchor поверх сброса на «сегодня».
+    slideX.stopAnimation(() => {});
+    animatingRef.current = false;
     setAnchor(startOfDay(new Date()));
-  }, []);
+    if (dayW > 0) {
+      slideRef.current = -(DAY_BUFFER * dayW);
+      slideX.setValue(slideRef.current);
+    }
+  }, [dayW, slideX]);
 
   const closeSlot = useCallback(() => setSlot(null), []);
 
@@ -140,24 +207,59 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
     return () => clearTimeout(t);
   }, []);
 
+  /** Snap к ближайшему дню и сброс полосы в базу — общий для Release/Terminate. */
+  const settleToSnap = useCallback(() => {
+    if (dayW <= 0 || animatingRef.current) {
+      return;
+    }
+    const {daysMoved, targetX} = computeSnap(slideRef.current, dayW, period, DAY_BUFFER);
+    animatingRef.current = true;
+    Animated.timing(slideX, {
+      toValue: targetX,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(({finished}) => {
+      if (!finished) {
+        animatingRef.current = false;
+        return;
+      }
+      setAnchor(prev => addDays(prev, daysMoved));
+      slideRef.current = -(DAY_BUFFER * dayW);
+      slideX.setValue(slideRef.current);
+      animatingRef.current = false;
+    });
+  }, [dayW, period, slideX]);
+
   const pan = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_e, g) =>
-          Math.abs(g.dx) > 24 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-        onPanResponderRelease: (_e, g) => {
-          if (g.dx <= -24) {
-            shift(period);
-          } else if (g.dx >= 24) {
-            shift(-period);
-          }
+          !animatingRef.current &&
+          Math.abs(g.dx) > 12 &&
+          Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+        onPanResponderGrant: () => {
+          dragStartRef.current = slideRef.current;
         },
+        onPanResponderMove: (_e, g) => {
+          if (dayW <= 0) {
+            return;
+          }
+          const stripLen = period + 2 * DAY_BUFFER;
+          const next = Math.max(
+            -(stripLen - period) * dayW,
+            Math.min(0, dragStartRef.current + g.dx),
+          );
+          slideX.setValue(next);
+          slideRef.current = next;
+        },
+        onPanResponderRelease: settleToSnap,
+        onPanResponderTerminate: settleToSnap,
       }),
-    [shift, period],
+    [dayW, period, slideX, settleToSnap],
   );
 
   const renderSlot = (dayIndex: number, hour: number, list: Entry[]) => {
-    const title = `${dayLabel(days[dayIndex])} · ${pad2(hour)}:00`;
+    const title = `${dayLabel(stripDays[dayIndex])} · ${pad2(hour)}:00`;
     if (list.length > 3) {
       const color = list[0].account.color;
       return (
@@ -207,6 +309,11 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
     );
   };
 
+  // Линия текущего времени привязана к колонке «сегодня» внутри полосы дней,
+  // поэтому двигается вместе с ней; если «сегодня» вне буфера — не рисуем.
+  const todayIndex = stripDays.findIndex(d => startOfDay(d).getTime() === todayKey);
+  const nowTop = (nowMinutes / 60) * HOUR_H;
+
   return (
     <View style={styles.root}>
       <View style={styles.topBar}>
@@ -240,13 +347,13 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
         </View>
 
         <View style={styles.navRow}>
-          <TouchableOpacity style={styles.navBtn} onPress={() => shift(-1)}>
+          <TouchableOpacity style={styles.navBtn} onPress={() => goDays(-1)}>
             <Icon name="chevron-left" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.todayBtn} onPress={resetToday}>
             <Text style={styles.todayText}>Сегодня</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.navBtn} onPress={() => shift(1)}>
+          <TouchableOpacity style={styles.navBtn} onPress={() => goDays(1)}>
             <Icon name="chevron-right" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
         </View>
@@ -258,22 +365,26 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
         {...pan.panHandlers}>
         <View style={styles.headerRow}>
           <View style={styles.timeHead} />
-          {days.map((day, index) => {
-            const active = startOfDay(day).getTime() === todayKey;
-            return (
-              <View key={index} style={[styles.dayHead, {width: dayW}]}>
-                <Text style={[styles.dayHeadText, active && styles.dayHeadTextActive]}>
-                  {dayLabel(day)}
-                </Text>
-              </View>
-            );
-          })}
+          <View style={styles.daysClip}>
+            <Animated.View style={[styles.daysStrip, {transform: [{translateX: slideX}]}]}>
+              {stripDays.map((day, index) => {
+                const active = startOfDay(day).getTime() === todayKey;
+                return (
+                  <View key={index} style={[styles.dayHead, {width: dayW}]}>
+                    <Text style={[styles.dayHeadText, active && styles.dayHeadTextActive]}>
+                      {dayLabel(day)}
+                    </Text>
+                  </View>
+                );
+              })}
+            </Animated.View>
+          </View>
         </View>
 
         {isEmpty ? <Text style={styles.empty}>Нет заявок на выбранный период</Text> : null}
 
         <ScrollView ref={scrollRef} style={styles.scroll} bounces={false} overScrollMode="never" showsVerticalScrollIndicator={false}>
-          <View style={[styles.gridRow, bodyW > 0 ? {width: bodyW} : undefined]}>
+          <View style={styles.gridRow}>
             <View style={styles.timeCol}>
               {HOURS.map(h => (
                 <View key={h} style={styles.timeCell}>
@@ -282,20 +393,30 @@ export default function ApplicationsCalendarScreen({onBack, onSelectItem}: Props
               ))}
             </View>
 
-            {days.map((_, dayIndex) => (
-              <View key={dayIndex} style={[styles.dayCol, {width: dayW}]}>
-                {HOURS.map(h => (
-                  <View key={h} style={styles.hourCell} />
+            <View style={styles.daysClip}>
+              <Animated.View style={[styles.daysStrip, {transform: [{translateX: slideX}]}]}>
+                {stripDays.map((_, dayIndex) => (
+                  <View key={dayIndex} style={[styles.dayCol, {width: dayW}]}>
+                    {HOURS.map(h => (
+                      <View key={h} style={styles.hourCell} />
+                    ))}
+                    {HOURS.map(h => {
+                      const list = slots.get(`${dayIndex}:${h}`);
+                      if (!list || list.length === 0) {
+                        return null;
+                      }
+                      return renderSlot(dayIndex, h, list);
+                    })}
+                  </View>
                 ))}
-                {HOURS.map(h => {
-                  const list = slots.get(`${dayIndex}:${h}`);
-                  if (!list || list.length === 0) {
-                    return null;
-                  }
-                  return renderSlot(dayIndex, h, list);
-                })}
-              </View>
-            ))}
+                {todayIndex >= 0 ? (
+                  <View
+                    pointerEvents="none"
+                    style={[styles.nowLine, {top: nowTop, left: todayIndex * dayW, width: dayW}]}
+                  />
+                ) : null}
+              </Animated.View>
+            </View>
           </View>
         </ScrollView>
       </View>
@@ -417,6 +538,13 @@ const createStyles = (c: ThemeColors) =>
       width: TIME_W,
       justifyContent: 'center',
     },
+    daysClip: {
+      flex: 1,
+      overflow: 'hidden',
+    },
+    daysStrip: {
+      flexDirection: 'row',
+    },
     dayHead: {
       justifyContent: 'center',
       alignItems: 'center',
@@ -462,6 +590,11 @@ const createStyles = (c: ThemeColors) =>
     dayCol: {
       borderLeftWidth: StyleSheet.hairlineWidth,
       borderLeftColor: c.separator,
+    },
+    nowLine: {
+      position: 'absolute',
+      height: 2,
+      backgroundColor: '#E53935',
     },
     hourCell: {
       height: HOUR_H,

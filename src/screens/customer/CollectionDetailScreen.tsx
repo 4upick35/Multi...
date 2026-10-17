@@ -12,7 +12,7 @@ import {useSecureScreen} from '../../hooks/useSecureScreen';
 import {useAcceptApplication, canAccept} from '../../hooks/useAcceptApplication';
 import {useApplicationActions} from '../../hooks/useApplicationActions';
 import type {ElmaAccount} from '../../types/account';
-import {fileGetLink, fileDownloadLink, fetchPicassoEntityStatus, fetchCollectionItemsByIds} from '../../services/elma-api';
+import {fileGetLink, fileDownloadLink, fetchPicassoEntityStatus} from '../../services/elma-api';
 import type {PicassoSignStatus} from '../../services/elma-api';
 import {loadCollection} from '../../services/customer-service';
 import {getExtraFields, buildAddress, displayFieldValue} from '../../utils/collection-fields';
@@ -22,8 +22,6 @@ import {parsePhoneDisplay, parsePhoneTel, parseApplicantName} from '../../utils/
 import {copyToClipboard} from '../../native/KeepAlive';
 import {isSafeExternalUrl} from '../../utils/url';
 import {useAppTheme} from '../../theme';
-
-const SERVICE_CONTRACT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Props = {
   item: CollectionItem;
@@ -118,65 +116,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
 
   // Резолв имён ссылочных полей (UUID → имена)
   const [resolvedRefs, setResolvedRefs] = useState<Map<string, string>>(new Map());
-
-  const [contractName, setContractName] = useState('');
-
-  useEffect(() => {
-    if (!currentAccount) {
-      return;
-    }
-    const resolved = resolvedRefs.get('contract');
-    if (resolved) {
-      setContractName(resolved);
-      return;
-    }
-    const collectIds = (val: unknown): string[] => {
-      if (typeof val === 'string') {
-        return SERVICE_CONTRACT_UUID_RE.test(val) ? [val] : [];
-      }
-      if (Array.isArray(val)) {
-        return val.flatMap(collectIds);
-      }
-      if (val && typeof val === 'object') {
-        const o = val as Record<string, unknown>;
-        const nested = (o.__id as string) || (o.id as string) || (o.Id as string);
-        return typeof nested === 'string' && SERVICE_CONTRACT_UUID_RE.test(nested) ? [nested] : [];
-      }
-      return [];
-    };
-    const pickNames = (items: unknown[]): string[] =>
-      items
-        .map(it => {
-          const o = it as Record<string, unknown>;
-          return String((o.__name as string) || (o.name as string) || '');
-        })
-        .filter(Boolean);
-    const ids = collectIds(item.raw.contract);
-    if (ids.length === 0) {
-      setContractName('');
-      return;
-    }
-    let cancelled = false;
-    fetchCollectionItemsByIds(currentAccount, 'customer_service', 'contracts', ids)
-      .then(res => {
-        const names = pickNames(res.items || []);
-        if (names.length > 0 || cancelled) {
-          return names;
-        }
-        return fetchCollectionItemsByIds(currentAccount, 'customer_service', 'services', ids).then(
-          r2 => pickNames(r2.items || []),
-        );
-      })
-      .then(names => {
-        if (!cancelled && names.length > 0) {
-          setContractName(names.join(', '));
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [currentAccount, item.raw, resolvedRefs]);
+  const [serviceFieldCodes, setServiceFieldCodes] = useState<string[]>([]);
 
   useEffect(() => {
     if (!currentAccount) {
@@ -187,6 +127,16 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
       if (cancelled || fieldMap.size === 0) {
         return;
       }
+      const codes: string[] = [];
+      fieldMap.forEach((target, code) => {
+        if (
+          target.namespace === 'customer_service' &&
+          target.code === 'contracts'
+        ) {
+          codes.push(code);
+        }
+      });
+      setServiceFieldCodes(codes);
       return resolveRefNames(currentAccount, item.raw, fieldMap);
     }).then(refNames => {
       if (!cancelled && refNames && refNames.size > 0) {
@@ -200,7 +150,13 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
 
   const isApplications = collection.key === 'applications';
   const showAcceptBtn = isApplications && currentAccount != null && canAccept(item.raw);
-  const showScheduleVisitBtn = isApplications && currentAccount != null && item.raw.show_set_date_of_visit === true;
+  // Визит уже назначен — даём изменить дату/мастера, даже если портал
+  // не выставляет флаг show_set_date_of_visit (он говорит лишь о первичном назначении).
+  const visitScheduled = String(item.raw.datetime_of_session ?? '').trim() !== '';
+  const showScheduleVisitBtn =
+    isApplications &&
+    currentAccount != null &&
+    (item.raw.show_set_date_of_visit === true || visitScheduled);
 
   const acceptFlow = useAcceptApplication(
     useCallback((acc: ElmaAccount) => {
@@ -290,6 +246,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
         <VisitScheduleModal
           visible={actions.actionState === 'readyToSchedule' || actions.actionState === 'sending'}
           applicationId={item.id}
+          title={visitScheduled ? 'Изменить визит' : 'Назначить визит'}
           loading={actions.actionState === 'sending'}
           masters={actions.masters}
           minDate={actions.minDate}
@@ -332,13 +289,26 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
       {isApplications && (() => {
         const raw = item.raw;
         const address = buildAddress(raw);
+        const apartment = String(raw.number_of_apartment ?? '').trim();
         const phone = parsePhoneDisplay(raw.client_phone_number);
         const phoneTel = parsePhoneTel(raw.client_phone_number);
         const applicant = parseApplicantName(raw.client_applicant) || displayFieldValue(raw.client_applicant, resolvedRefs, 'client_applicant');
         const technic = displayFieldValue(raw.technic, resolvedRefs, 'technic');
         const requirement = displayFieldValue(raw.customers_requirement_ref, resolvedRefs, 'customers_requirement_ref');
         const visitDt = String(raw.datetime_of_session || '').trim();
-        const serviceCode = contractName || displayFieldValue(raw.contract, resolvedRefs, 'contract');
+        let serviceCode = resolvedRefs.get('contract') || '';
+        if (!serviceCode) {
+          for (const code of serviceFieldCodes) {
+            const value = resolvedRefs.get(code);
+            if (value) {
+              serviceCode = value;
+              break;
+            }
+          }
+        }
+        if (!serviceCode) {
+          serviceCode = displayFieldValue(raw.contract, resolvedRefs, 'contract');
+        }
 
         const openAddress = () => {
           if (!address) { return; }
@@ -381,7 +351,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
           }
         };
 
-        const hasFields = address || phone || applicant || technic || requirement || visitDt || serviceCode;
+        const hasFields = address || phone || applicant || technic || requirement || visitDt || serviceCode || apartment;
         if (!hasFields) { return null; }
 
         return (
@@ -410,6 +380,12 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
                 <Text style={styles.label}>Адрес:</Text>
                 <Text style={[styles.fieldValue, styles.linkText]}>{address}</Text>
               </TouchableOpacity>
+            ) : null}
+            {apartment ? (
+              <View style={styles.fieldRow}>
+                <Text style={styles.label}>Квартира:</Text>
+                <Text style={styles.fieldValue}>{apartment}</Text>
+              </View>
             ) : null}
             {technic ? (
               <View style={styles.fieldRow}>
@@ -460,7 +436,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
             disabled={actions.actionState !== 'idle' && actions.actionState !== 'done' && actions.actionState !== 'error' && actions.actionState !== 'readyToSchedule'}
             loading={actions.actionState === 'loadingForm'}
             style={styles.acceptButton}>
-            Назначить визит
+            {visitScheduled ? 'Изменить дату визита / мастера' : 'Назначить визит'}
           </Button>
         </View>
       )}
@@ -557,8 +533,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
         icon="content-copy"
         style={styles.copyFab}
         onPress={() => {
-          const msg = buildApplicationMessage(item.raw, resolvedRefs);
-          copyToClipboard(msg);
+          copyToClipboard(buildApplicationMessage(item.raw, resolvedRefs));
           ToastAndroid.show('Скопировано', ToastAndroid.SHORT);
         }}
       />

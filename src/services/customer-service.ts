@@ -100,3 +100,14 @@ export async function getWorkCalendar(
 ): Promise<Record<string, unknown> | null> {
   return customerService.getWorkCalendar(account);
 }
+
+/**
+ * Догрузить одну заявку по id и показать её в списке сразу (realtime).
+ * Делегирует в CustomerService.insertApplicationById.
+ */
+export async function insertApplicationById(
+  account: ElmaAccount,
+  id: string,
+): Promise<boolean> {
+  return customerService.insertApplicationById(account, id);
+}

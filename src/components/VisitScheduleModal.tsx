@@ -16,6 +16,7 @@ export interface Master {
 interface Props {
   visible: boolean;
   applicationId: string;
+  title?: string;
   loading: boolean;
   masters: Master[];
   minDate?: Date | null;
@@ -25,6 +26,7 @@ interface Props {
 
 export default function VisitScheduleModal({
   visible,
+  title = 'Назначить визит',
   loading,
   masters,
   minDate,
@@ -85,7 +87,7 @@ export default function VisitScheduleModal({
     <Portal>
       <Modal visible={visible} onDismiss={onCancel} contentContainerStyle={styles.modal}>
         <Text variant="titleMedium" style={styles.title}>
-          Назначить визит
+          {title}
         </Text>
 
         <Divider style={styles.divider} />

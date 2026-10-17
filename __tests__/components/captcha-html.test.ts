@@ -24,6 +24,17 @@ describe('buildCaptchaHtml', () => {
     expect(html).toContain("type:'loaded'");
   });
 
+  it('содержит обычный grecaptcha.render с sitekey', () => {
+    expect(html).toContain("grecaptcha.render('captcha-container'");
+    expect(html).toContain('sitekey: SITEKEY');
+  });
+
+  it('содержит попытку grecaptcha.execute после render', () => {
+    expect(html).toContain('var widgetId = grecaptcha.render');
+    expect(html).toContain('grecaptcha.execute(widgetId)');
+    expect(html).toContain('grecaptcha.ready');
+  });
+
   describe('при пустом siteKey', () => {
     const emptyHtml = buildCaptchaHtml('', 'https://example.com');
 

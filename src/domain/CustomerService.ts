@@ -19,6 +19,7 @@ import {
 } from '../interfaces/persistence';
 import {
   fetchCollectionItems as apiFetchCollectionItems,
+  fetchCollectionItemsByIds,
   searchWorkerQuery,
   fetchWorkCalendar,
   isPortalCustomerServiceAvailable,
@@ -217,6 +218,39 @@ export class CustomerService {
       return {ok: true};
     } catch (e: unknown) {
       return this.handleCSError(e, account.id, collection);
+    }
+  }
+
+  /**
+   * Догрузить одну заявку по id и положить её в начало списка.
+   * Нужно для realtime: новая заявка появляется в списке сразу,
+   * не дожидаясь ближайшего полного опроса.
+   */
+  async insertApplicationById(account: ElmaAccount, id: string): Promise<boolean> {
+    try {
+      const {items, updatedAccount} = await fetchCollectionItemsByIds(
+        account,
+        'customer_service',
+        'applications',
+        [id],
+      );
+      if (items.length === 0) {
+        logDiag('applications-sync', 'insert-app miss account=' + maskValue(account.id) + ' id=' + id);
+        return false;
+      }
+      persistUpdatedAccount(this.accountPersistence, account.id, updatedAccount);
+      const statusMap = await getStatusMap(account);
+      const mapped = (items as Record<string, unknown>[]).map(raw => rawToItem(raw, account.id, statusMap));
+      const current = this.csPersistence.getItems(account.id, 'applications') || [];
+      const incoming = new Set(mapped.map(item => item.id));
+      const merged = [...mapped, ...current.filter(item => !incoming.has(item.id))];
+      this.csPersistence.setItems(account.id, 'applications', merged);
+      logDiag('applications-sync', `insert-app ok account=${maskValue(account.id)} id=${id} size=${merged.length}`);
+      return true;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logDiag('applications-sync', 'insert-app error id=' + id + ' ' + msg);
+      return false;
     }
   }
 

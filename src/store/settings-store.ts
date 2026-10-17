@@ -7,6 +7,9 @@ import {
   MIN_POLL_INTERVAL_SEC,
   MAX_POLL_INTERVAL_SEC,
   PRIORITY_MAX_ACCOUNTS,
+  DEFAULT_NEW_APPLICATION_SOUND,
+  DEFAULT_OTHER_SOUND,
+  DEFAULT_ALERT_VOLUME,
 } from '../config/constants';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +29,12 @@ interface SettingsState {
   soundEnabled: boolean;
   vibrationEnabled: boolean;
   alertRepeatCount: number;
+  /** Звук для уведомлений о новой заявке (отдельная группа). */
+  newApplicationSoundId: string;
+  newApplicationVolume: number;
+  /** Звук для остальных уведомлений (задачи, смена статуса и т.п.). */
+  otherSoundId: string;
+  otherVolume: number;
   floatingWidgetEnabled: boolean;
   syncPaused: boolean;
   /** Пуш-режим: не опрашивать сервер по расписанию — список обновляется из realtime. */
@@ -51,6 +60,15 @@ function clampInterval(sec: number): number {
 
 function clampRepeatCount(count: number): number {
   return Math.max(1, Math.min(10, count));
+}
+
+function clampVolume(volume: number): number {
+  return Math.max(0, Math.min(10, volume));
+}
+
+/** Непустая строка-идентификатор звука; иначе значение по умолчанию. */
+function normalizeSoundId(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() !== '' ? value : fallback;
 }
 
 /** Приоритетные учётки: только непустые строки, без дублей, не больше лимита. */
@@ -80,10 +98,10 @@ function normalizePriorityIds(value: unknown): string[] {
 // ---------------------------------------------------------------------------
 
 function persistSettings(state: SettingsState): void {
-  const {pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds} = state;
+  const {pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, newApplicationSoundId, newApplicationVolume, otherSoundId, otherVolume, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds} = state;
   AsyncStorage.setItem(
     STORAGE_KEYS.settings,
-    JSON.stringify({pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds}),
+    JSON.stringify({pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, newApplicationSoundId, newApplicationVolume, otherSoundId, otherVolume, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds}),
   ).catch(() => {});
 }
 
@@ -101,6 +119,10 @@ export const useSettingsStore = create<SettingsState & SettingsActions>(
     soundEnabled: true,
     vibrationEnabled: true,
     alertRepeatCount: 3,
+    newApplicationSoundId: DEFAULT_NEW_APPLICATION_SOUND,
+    newApplicationVolume: DEFAULT_ALERT_VOLUME,
+    otherSoundId: DEFAULT_OTHER_SOUND,
+    otherVolume: DEFAULT_ALERT_VOLUME,
     floatingWidgetEnabled: false,
     syncPaused: false,
     pushMode: false,
@@ -152,6 +174,19 @@ export const useSettingsStore = create<SettingsState & SettingsActions>(
             soundEnabled: parsed.soundEnabled ?? true,
             vibrationEnabled: parsed.vibrationEnabled ?? true,
             alertRepeatCount: clampRepeatCount(parsed.alertRepeatCount ?? 3),
+            newApplicationSoundId: normalizeSoundId(
+              parsed.newApplicationSoundId,
+              DEFAULT_NEW_APPLICATION_SOUND,
+            ),
+            newApplicationVolume: clampVolume(
+              typeof parsed.newApplicationVolume === 'number'
+                ? parsed.newApplicationVolume
+                : DEFAULT_ALERT_VOLUME,
+            ),
+            otherSoundId: normalizeSoundId(parsed.otherSoundId, DEFAULT_OTHER_SOUND),
+            otherVolume: clampVolume(
+              typeof parsed.otherVolume === 'number' ? parsed.otherVolume : DEFAULT_ALERT_VOLUME,
+            ),
             floatingWidgetEnabled: parsed.floatingWidgetEnabled ?? false,
             syncPaused: parsed.syncPaused ?? false,
             pushMode: parsed.pushMode ?? false,
@@ -205,6 +240,21 @@ export const useSettingsStore = create<SettingsState & SettingsActions>(
       }
       if (partial.alertRepeatCount !== undefined) {
         next.alertRepeatCount = clampRepeatCount(partial.alertRepeatCount);
+      }
+      if (partial.newApplicationSoundId !== undefined) {
+        next.newApplicationSoundId = normalizeSoundId(
+          partial.newApplicationSoundId,
+          DEFAULT_NEW_APPLICATION_SOUND,
+        );
+      }
+      if (partial.newApplicationVolume !== undefined) {
+        next.newApplicationVolume = clampVolume(partial.newApplicationVolume);
+      }
+      if (partial.otherSoundId !== undefined) {
+        next.otherSoundId = normalizeSoundId(partial.otherSoundId, DEFAULT_OTHER_SOUND);
+      }
+      if (partial.otherVolume !== undefined) {
+        next.otherVolume = clampVolume(partial.otherVolume);
       }
       if (partial.floatingWidgetEnabled !== undefined) {
         next.floatingWidgetEnabled = partial.floatingWidgetEnabled;
