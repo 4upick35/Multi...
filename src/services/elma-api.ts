@@ -45,10 +45,6 @@ export {
   PROCESS_TEMPLATE_VERSION, EXIT_CONFIRM_VISIT, EXIT_DONE_CONFIRMED,
 } from '../config/elma-constants';
 export {
-  isVisitExit, getTaskInstance, isVisitConfirmed, needsVisitConfirmation,
-  isVisitWithoutConfirmation, buildVisitLongFields,
-} from '../domain/visit';
-export {
   buildSystemTasksQuery,
   fetchTasks,
   getTaskExits,

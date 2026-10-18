@@ -61,7 +61,7 @@ jest.mock('../../src/services/realtime', () => ({
   isRealtimeSubscribed: jest.fn(() => false),
 }));
 
-import {computeQueueGapMs} from '../../src/services/applications-sync';
+import {computeQueueGapMs} from '../../src/domain/sync-policy';
 
 describe('applications-sync — computeQueueGapMs', () => {
   it('интервал делится на число учёток очереди', () => {

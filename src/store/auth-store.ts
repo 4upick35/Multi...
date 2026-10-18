@@ -6,7 +6,7 @@ import {useTasksStore} from './tasks-store';
 import {useFeedStore} from './feed-store';
 import {useCustomerServiceStore} from './customer-service-store';
 import {useUiStore} from './ui-store';
-import {AccountRegistry} from '../infrastructure/AccountRegistry';
+import {accountRegistry} from '../di/registry';
 import {
   saveAccountSecrets,
   loadAccountSecrets,
@@ -16,11 +16,6 @@ import {clearAcceptTemplatesForAccount} from '../services/accept-template-cache'
 import {clearSeenApplicationAlertsForAccount} from '../services/seen-application-alerts';
 import {cacheClearAccount} from '../infrastructure/elma-cache';
 import {stopRealtime} from '../services/realtime';
-
-// ---------------------------------------------------------------------------
-// Singleton-реестр аккаунтов ( используется SessionManager-ом и сервисами )
-// ---------------------------------------------------------------------------
-export const accountRegistry = new AccountRegistry();
 
 // ---------------------------------------------------------------------------
 // Интерфейс стора (публичный API — БЕЗ ИЗМЕНЕНИЙ)

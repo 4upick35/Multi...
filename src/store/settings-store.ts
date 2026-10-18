@@ -1,7 +1,7 @@
 import {create} from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {STORAGE_KEYS} from '../config/constants';
-import {ThemeMode} from '../theme';
+import {ThemeMode} from '../types/theme';
 import {
   DEFAULT_POLL_INTERVAL_SEC,
   MIN_POLL_INTERVAL_SEC,

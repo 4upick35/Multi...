@@ -15,7 +15,8 @@ import {useRefresh} from '../../hooks/useRefresh';
 import {useFeedPolling} from '../../hooks/useFeedPolling';
 import {isNewApplicationMessage, extractApplicationNumber} from '../../utils/feed-helpers';
 import {searchApplicationByNumber} from '../../services/elma-api';
-import {useAcceptApplication, canAccept} from '../../hooks/useAcceptApplication';
+import {useAcceptApplication} from '../../hooks/useAcceptApplication';
+import {canAccept} from '../../domain/application-rules';
 import type {ElmaAccount} from '../../types/account';
 
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];

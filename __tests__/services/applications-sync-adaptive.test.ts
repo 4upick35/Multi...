@@ -62,7 +62,8 @@ jest.mock('../../src/services/realtime', () => ({
   isRealtimeSubscribed: jest.fn(() => false),
 }));
 
-import {computeAdaptiveIntervalMs, resetAdaptivePolling} from '../../src/services/applications-sync';
+import {computeAdaptiveIntervalMs} from '../../src/domain/sync-policy';
+import {resetAdaptivePolling} from '../../src/services/applications-sync';
 import {MAX_POLL_INTERVAL_SEC} from '../../src/config/constants';
 
 describe('applications-sync — computeAdaptiveIntervalMs', () => {

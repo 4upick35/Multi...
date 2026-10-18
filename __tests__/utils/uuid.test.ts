@@ -1,5 +1,5 @@
 import {uuidv4, isUuid} from '../../src/utils/uuid';
-import {canAccept} from '../../src/hooks/useAcceptApplication';
+import {canAccept} from '../../src/domain/application-rules';
 
 describe('uuid v4', () => {
   it('генерирует строку длиной 36 символов', () => {

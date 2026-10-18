@@ -5,7 +5,7 @@ import {Text, Button, Chip} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BackButton from '../../components/BackButton';
 import SkeletonBlock from '../../components/SkeletonBlock';
-import DraggableChip from '../../components/DraggableChip';
+import AccountChips from '../../components/AccountChips';
 import {useAuthStore} from '../../store/auth-store';
 import CaptchaModal from '../../components/CaptchaModal';
 import {useCustomerServiceStore, EMPTY_COLLECTION_ITEMS} from '../../store/customer-service-store';
@@ -14,15 +14,16 @@ import {loadCollection, loadCollectionPage, searchCollection} from '../../servic
 import {refreshApplicationsNow, isApplicationsSyncRunning, startApplicationsSync, setForegroundAccounts} from '../../services/applications-sync';
 import {useActiveAccount} from '../../hooks/useActiveAccount';
 import {useSettingsStore} from '../../store/settings-store';
-import {useAcceptApplication, canAccept} from '../../hooks/useAcceptApplication';
+import {useAcceptApplication} from '../../hooks/useAcceptApplication';
+import {canAccept} from '../../domain/application-rules';
 import QuantumLoader from '../../components/QuantumLoader';
 import type {ElmaAccount} from '../../types/account';
 import {buildShortAddress, sortApplicationsByNumberDesc} from '../../utils/collection-fields';
-import {contrastText, mixWithWhite, mixWithBlack} from '../../utils/color';
+import {contrastText} from '../../utils/color';
 import PressScale from '../../components/PressScale';
 import {formatTimeHMS} from '../../utils/datetime';
 import {logDiag} from '../../diag/accept-log';
-import {getRemainingPauseMs} from '../../infrastructure/AccountThrottle';
+import {getRemainingPauseMs} from '../../services/throttle';
 
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
 
@@ -36,11 +37,9 @@ type Props = {
   onOpenCalendar?: () => void;
 };
 
-const CHIP_GAP = 6;
-
 export default function CollectionListScreen({collection, initialAccountId, filterSeq, onSelectItem, onBack, onOpenCalendar}: Props) {
   const {account: activeAccount, accountId: resolvedAccountId, accounts} = useActiveAccount();
-  const {colors, mode} = useAppTheme();
+  const {colors} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const activeAccountId = resolvedAccountId;
   const currentAccount = activeAccount || (activeAccountId ? accounts.find(a => a.id === activeAccountId) : null);
@@ -48,110 +47,6 @@ export default function CollectionListScreen({collection, initialAccountId, filt
   const isApplications = collection.key === 'applications';
   const syncPaused = useSettingsStore(s => s.syncPaused);
   const reorderAccounts = useAuthStore(s => s.reorderAccounts);
-
-  // Перетаскивание чипов учёток: долгое нажатие открепляет чип,
-  // остальные чипы раздвигаются под место вставки.
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragShift, setDragShift] = useState<{from: number; to: number; shiftPx: number} | null>(null);
-  const chipLayouts = useRef<Record<number, {x: number; width: number}>>({});
-  const dragRef = useRef<{
-    id: string;
-    fromIndex: number;
-    startCx: number;
-    width: number;
-    centers: Array<{id: string; cx: number}>;
-    targetIndex: number;
-  } | null>(null);
-  const registerChipLayout = useCallback((index: number, layout: {x: number; width: number}) => {
-    chipLayouts.current[index] = layout;
-  }, []);
-
-  const handleChipDragStart = useCallback(
-    (index: number) => {
-      const dragged = accounts[index];
-      const own = chipLayouts.current[index];
-      if (!dragged || !own) {
-        return;
-      }
-      const centers: Array<{id: string; cx: number}> = [];
-      accounts.forEach((account, i) => {
-        const layout = chipLayouts.current[i];
-        if (layout) {
-          centers.push({id: account.id, cx: layout.x + layout.width / 2});
-        }
-      });
-      dragRef.current = {
-        id: dragged.id,
-        fromIndex: index,
-        startCx: own.x + own.width / 2,
-        width: own.width,
-        centers,
-        targetIndex: index,
-      };
-      setDraggingId(dragged.id);
-      setDragShift({from: index, to: index, shiftPx: own.width + CHIP_GAP});
-    },
-    [accounts],
-  );
-
-  const handleChipDragMove = useCallback((index: number, dx: number) => {
-    const drag = dragRef.current;
-    if (!drag) {
-      return;
-    }
-    const draggedCx = drag.startCx + dx;
-    let to = 0;
-    drag.centers.forEach(center => {
-      if (center.id !== drag.id && center.cx < draggedCx) {
-        to += 1;
-      }
-    });
-    if (to !== drag.targetIndex) {
-      drag.targetIndex = to;
-      setDragShift({from: drag.fromIndex, to, shiftPx: drag.width + CHIP_GAP});
-    }
-  }, []);
-
-  const finishChipDrag = useCallback(() => {
-    dragRef.current = null;
-    setDraggingId(null);
-    setDragShift(null);
-  }, []);
-
-  const handleChipDragEnd = useCallback(
-    (_index: number) => {
-      const drag = dragRef.current;
-      finishChipDrag();
-      if (!drag) {
-        return;
-      }
-      const to = drag.targetIndex;
-      if (to === drag.fromIndex) {
-        return;
-      }
-      const ids = accounts.map(account => account.id);
-      const [moved] = ids.splice(drag.fromIndex, 1);
-      ids.splice(to, 0, moved);
-      reorderAccounts(ids).catch(() => {});
-    },
-    [accounts, finishChipDrag, reorderAccounts],
-  );
-
-  const chipShift = useCallback(
-    (index: number): number => {
-      if (!dragShift || index === dragShift.from) {
-        return 0;
-      }
-      if (dragShift.to > dragShift.from && index > dragShift.from && index <= dragShift.to) {
-        return -dragShift.shiftPx;
-      }
-      if (dragShift.to < dragShift.from && index >= dragShift.to && index < dragShift.from) {
-        return dragShift.shiftPx;
-      }
-      return 0;
-    },
-    [dragShift],
-  );
 
   // Локальный фильтр учётки: null = Все, string = конкретная учётка.
   const [filterAccountId, setFilterAccountId] = useState<string | null>(activeAccountId ?? null);
@@ -586,60 +481,15 @@ export default function CollectionListScreen({collection, initialAccountId, filt
         </Text>
       )}
 
-      {accounts.length > 1 && (
-        <View style={styles.accountChipsWrap}>
-          <View style={styles.accountChipsRow}>
-            <TouchableOpacity
-              style={[styles.accountFilterChip, !filterAccountId && styles.accountFilterChipAll]}
-              onPress={() => setFilterAccountId(null)}>
-              <Text style={[styles.accountFilterChipText, !filterAccountId && styles.accountFilterChipTextActive]}>
-                Все
-              </Text>
-            </TouchableOpacity>
-            {accounts.map((acc, index) => {
-              const active = filterAccountId === acc.id;
-              const accTs = lastRefreshAt[acc.id];
-              const chipBg = active ? acc.color : (mode === 'dark' ? mixWithBlack(acc.color, 0.55) : mixWithWhite(acc.color, 0.7));
-              return (
-                <DraggableChip
-                  key={acc.id}
-                  index={index}
-                  active={draggingId === acc.id}
-                  disabled={draggingId !== null && draggingId !== acc.id}
-                  shiftPx={chipShift(index)}
-                  style={[
-                    styles.accountFilterChip,
-                    {backgroundColor: chipBg},
-                  ]}
-                  onPress={() => setFilterAccountId(active ? null : acc.id)}
-                  onDragStart={handleChipDragStart}
-                  onDragMove={handleChipDragMove}
-                  onDragEnd={handleChipDragEnd}
-                  onDragCancel={finishChipDrag}
-                  registerLayout={registerChipLayout}>
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.accountFilterChipText,
-                      {color: contrastText(chipBg)},
-                    ]}>
-                    {acc.name}
-                  </Text>
-                  {accTs ? (
-                    <Text
-                      style={[
-                        styles.accountFilterChipTime,
-                        {color: contrastText(chipBg)},
-                      ]}>
-                      {formatTimeHMS(new Date(accTs))}
-                    </Text>
-                  ) : null}
-                </DraggableChip>
-              );
-            })}
-          </View>
-        </View>
-      )}
+      <AccountChips
+        accounts={accounts}
+        activeId={filterAccountId}
+        lastRefreshAt={lastRefreshAt}
+        onSelect={setFilterAccountId}
+        onReorder={(ids) => {
+          reorderAccounts(ids).catch(() => {});
+        }}
+      />
 
       {hasError ? (
         <View style={styles.errorBlock}>
@@ -888,43 +738,6 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
     color: c.onBackground,
     fontSize: 13,
     fontWeight: '600',
-  },
-  accountChipsWrap: {
-    height: 56,
-    overflow: 'hidden',
-    flexShrink: 0,
-  },
-  accountChipsRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    gap: 6,
-    alignItems: 'center',
-  },
-  accountFilterChip: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 16,
-    backgroundColor: c.chipDefault,
-    minHeight: 32,
-  },
-  accountFilterChipAll: {
-    backgroundColor: c.primary,
-  },
-  accountFilterChipText: {
-    fontSize: 12,
-    color: c.textPrimary,
-  },
-  accountFilterChipTextActive: {
-    color: c.onBackground,
-  },
-  accountFilterChipTime: {
-    fontSize: 10,
-    fontWeight: '600',
-    marginTop: 1,
   },
   pauseButtonDefault: {
     width: 32,

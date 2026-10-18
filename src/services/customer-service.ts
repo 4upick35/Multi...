@@ -4,48 +4,9 @@
 // ---------------------------------------------------------------------------
 
 import {ElmaAccount} from '../types/account';
-import {CollectionKey, CollectionItem} from '../types/customer-service';
-import {useCustomerServiceStore} from '../store/customer-service-store';
-import {useAuthStore} from '../store/auth-store';
-import {CustomerService, CSRefreshResult} from '../domain/CustomerService';
-
-// ---------------------------------------------------------------------------
-// Адаптеры персистентности: подключаем zustand-сторы к доменному сервису
-// ---------------------------------------------------------------------------
-
-const csPersistence = {
-  setItems: (accountId: string, collection: CollectionKey, items: CollectionItem[]) =>
-    useCustomerServiceStore.getState().setItems(accountId, collection, items),
-  appendItems: (accountId: string, collection: CollectionKey, items: CollectionItem[]) =>
-    useCustomerServiceStore.getState().appendItems(accountId, collection, items),
-  getItems: (accountId: string, collection: CollectionKey): CollectionItem[] =>
-    useCustomerServiceStore.getState().getItems(accountId, collection),
-  setCollectionStatus: (
-    accountId: string,
-    collection: CollectionKey,
-    status: {
-      status: 'idle' | 'loading' | 'ok' | 'error';
-      error?: string;
-      total?: number;
-      loadedCount?: number;
-      hasMore?: boolean;
-      accessDenied?: boolean;
-    },
-  ) =>
-    useCustomerServiceStore.getState().setCollectionStatus(accountId, collection, status),
-};
-
-const accountPersistence = {
-  updateAccount: (accountId: string, data: Partial<ElmaAccount>) =>
-    useAuthStore.getState().updateAccount(accountId, data),
-};
-
-// ---------------------------------------------------------------------------
-// Singleton-экземпляр доменного сервиса
-// ---------------------------------------------------------------------------
-
-const customerService = new CustomerService(csPersistence, accountPersistence);
-
+import {CollectionKey} from '../types/customer-service';
+import type {CSRefreshResult} from '../domain/CustomerService';
+import {customerService} from '../di/container';
 // ---------------------------------------------------------------------------
 // Re-export типа (обратная совместимость)
 // ---------------------------------------------------------------------------

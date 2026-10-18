@@ -4,7 +4,7 @@ import {Text, Button, Checkbox, TextInput} from 'react-native-paper';
 import {useAppTheme} from '../theme';
 import type {ElmaAccount} from '../types/account';
 import {useVisitConfirmation} from '../hooks/useVisitConfirmation';
-import {isVisitConfirmed} from '../services/elma-api';
+import {isVisitConfirmed} from '../domain/visit';
 
 type Props = {
   account: ElmaAccount;

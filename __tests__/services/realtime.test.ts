@@ -165,6 +165,8 @@ import {
   buildPrivateChannel,
   buildRealtimeChannels,
   REALTIME_SERVICES,
+} from '../../src/infrastructure/realtime/urls';
+import {
   REALTIME_WATCHDOG_INTERVAL_MS,
   REALTIME_RESTART_MIN_GAP_MS,
   REALTIME_MAX_CONNECTION_AGE_MS,
@@ -181,8 +183,8 @@ import {
   realtimeConnectionsCount,
   stripHtmlText,
   markApplicationSeen,
-  classifyNotification,
 } from '../../src/services/realtime';
+import {classifyNotification} from '../../src/domain/notification-rules';
 import {DeviceEventEmitter} from 'react-native';
 import {SYNC_TICK_EVENT} from '../../src/native/KeepAlive';
 import {logDiag} from '../../src/diag/accept-log';

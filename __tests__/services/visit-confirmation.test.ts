@@ -15,17 +15,19 @@ import {
   sendVisitConfirmationCode,
   confirmVisit,
   clearVisitTemplateCache,
-  getTaskInstance,
-  isVisitConfirmed,
-  needsVisitConfirmation,
-  isVisitWithoutConfirmation,
-  buildVisitLongFields,
   EXECUTION_FIELD_IDS,
   TEMPLATE_ID,
   FORM_CODE,
   FORM_VERSION,
   EXIT_CONFIRM_VISIT,
 } from '../../src/services/elma-api';
+import {
+  getTaskInstance,
+  isVisitConfirmed,
+  needsVisitConfirmation,
+  isVisitWithoutConfirmation,
+  buildVisitLongFields,
+} from '../../src/domain/visit';
 import type {ElmaAccount} from '../../src/types/account';
 import {delay} from '../../src/native/KeepAlive';
 

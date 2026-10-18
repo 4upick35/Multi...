@@ -11,9 +11,8 @@ import {
   FAST_MIN_GAP_MS,
   FAST_GAP_JITTER_MS,
   PUSH_FALLBACK_DELAY_MS,
-  QUEUE_MIN_GAP_MS,
-  MAX_POLL_INTERVAL_SEC,
 } from '../config/constants';
+import {computeAdaptiveIntervalMs, computeQueueGapMs} from '../domain/sync-policy';
 import {nextAccountIntervalMs} from '../utils/poll-interval';
 import {SYNC_TICK_EVENT, startSyncTicker, stopSyncTicker, delay} from '../native/KeepAlive';
 import {logDiag} from '../diag/accept-log';
@@ -61,14 +60,6 @@ let retryDelayById = new Map<string, number>();
 const ADAPTIVE_NO_CHANGE_STEPS = 3;
 let idleSteps = new Map<string, number>();
 let lastSignature = new Map<string, string>();
-
-/**
- * Адаптивный интервал опроса: baseMs × 2^idle, но не больше MAX_POLL_INTERVAL_SEC.
- * Чистая функция — для тестов.
- */
-export function computeAdaptiveIntervalMs(baseMs: number, idle: number): number {
-  return Math.min(baseMs * Math.pow(2, Math.max(0, idle)), MAX_POLL_INTERVAL_SEC * 1000);
-}
 
 /** Стабильная сигнатура списка заявок учётки: id, статус, updatedAt, createdAt. */
 function applicationsSignature(accId: string): string {
@@ -167,16 +158,6 @@ function shouldPollInPushMode(accId: string, now: number): boolean {
 function currentIntervalMs(): number {
   const baseMs = useSettingsStore.getState().pollIntervalSec * 1000;
   return nextAccountIntervalMs(baseMs, Math.round(baseMs * 0.5));
-}
-
-/**
- * Разнос между стартами учёток очереди: интервал опроса делится на число
- * учёток в очереди, чтобы каждая успевала в свой интервал. Нижняя граница —
- * QUEUE_MIN_GAP_MS. Чистая функция — для тестов.
- */
-export function computeQueueGapMs(intervalMs: number, queueCount: number): number {
-  const n = Math.max(1, Math.floor(queueCount));
-  return Math.max(QUEUE_MIN_GAP_MS, Math.round(intervalMs / n));
 }
 
 /** Текущий разнос очереди: интервал из настроек / число неприоритетных учёток + джиттер. */

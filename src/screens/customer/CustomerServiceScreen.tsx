@@ -13,7 +13,7 @@ import {refreshApplicationsNow, isApplicationsSyncRunning, startApplicationsSync
 import {useCustomerServiceStore} from '../../store/customer-service-store';
 import {useActiveAccount} from '../../hooks/useActiveAccount';
 import {useRefresh} from '../../hooks/useRefresh';
-import {getRemainingPauseMs} from '../../infrastructure/AccountThrottle';
+import {getRemainingPauseMs} from '../../services/throttle';
 import AccountSelector from '../../components/AccountSelector';
 import {useAuthStore} from '../../store/auth-store';
 import {useSettingsStore} from '../../store/settings-store';

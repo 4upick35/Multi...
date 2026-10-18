@@ -5,8 +5,6 @@
 import {useColorScheme} from 'react-native';
 import {useSettingsStore} from '../store/settings-store';
 
-export type ThemeMode = 'light' | 'dark' | 'system';
-
 // ---------- Light theme ----------
 export const LIGHT_THEME = {
   colors: {

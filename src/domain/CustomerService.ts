@@ -31,7 +31,7 @@ import {
 } from '../services/app-metadata';
 import {logDiag} from '../diag/accept-log';
 import {maskValue} from '../utils/mask';
-import {recordBanSignal} from '../infrastructure/AccountThrottle';
+import type {ThrottlePort} from '../interfaces/throttle';
 import {persistUpdatedAccount} from './account-persistence';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +75,7 @@ export class CustomerService {
   constructor(
     private csPersistence: CustomerServicePersistence,
     private accountPersistence: AccountPersistence,
+    private throttle: ThrottlePort,
   ) {}
 
   // -----------------------------------------------------------------------
@@ -196,7 +197,7 @@ export class CustomerService {
             status: 'error',
             error: 'empty-response',
           });
-          recordBanSignal(account.id, 'empty-response');
+          this.throttle.recordBanSignal(account.id, 'empty-response');
           return {ok: false, error: 'empty-response', kind: 'other' as ElmaRequestKind};
         }
         logDiag(

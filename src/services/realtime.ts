@@ -19,64 +19,28 @@ import {SYNC_TICK_EVENT} from '../native/KeepAlive';
 import type {AlertOptions} from '../native/KeepAlive';
 import * as SettingsStore from '../store/settings-store';
 import * as SeenApplicationAlerts from './seen-application-alerts';
+import {classifyNotification} from '../domain/notification-rules';
+import type {NotificationKind} from '../domain/notification-rules';
 import {
   DEFAULT_NEW_APPLICATION_SOUND,
   DEFAULT_OTHER_SOUND,
   DEFAULT_ALERT_VOLUME,
 } from '../config/constants';
+import {buildRealtimeUrl, buildRealtimeChannels} from '../infrastructure/realtime/urls';
+import {listCookieNames} from '../infrastructure/realtime/cookies';
+import {createRealtimeWebSocket} from '../infrastructure/realtime/websocket';
 
 /** Тег диагностического журнала. */
 const TAG = 'realtime';
 
-/** Путь websocket-эндпоинта портала (relative to baseUrl). */
-const WS_PATH = '/ws/v2/websocket';
-
 /** Максимальная длина JSON-payload в диагностическом логе. */
 const PAYLOAD_LOG_LIMIT = 300;
-
-/** Сервисы portal-frontend: для каждого — свой пользовательский канал. */
-export const REALTIME_SERVICES: readonly string[] = ['', 'feed', 'crm', 'events', 'chat'];
 
 /** Событие личного уведомления портала (новая заявка/задача) вида feed/target/message. */
 const FEED_MESSAGE_EVENT = 'feed/target/message';
 
 /** Событие объектного обновления портала (task-created и др.) — только diag, без пуша. */
 const OBJECT_EVENT = 'object';
-
-/** Тип локального уведомления по содержанию title/body portal-сообщения. */
-export type NotificationKind = 'task-new' | 'application-new' | 'status' | 'other';
-
-/**
- * Классифицировать feed-уведомление по нормализованному тексту (title + body,
- * нижний регистр): новые задачи / новые заявки / смена статуса / прочее.
- */
-export function classifyNotification(title: string, body: string): NotificationKind {
-  const text = `${title} ${body}`.toLowerCase();
-  if (text.includes('задач')) {
-    if (
-      text.includes('поставлена') ||
-      text.includes('назначена') ||
-      text.includes('создана') ||
-      text.includes('новая задача') ||
-      text.includes('вам назначена')
-    ) {
-      return 'task-new';
-    }
-    return 'status';
-  }
-  if (text.includes('заявк')) {
-    if (
-      text.includes('новая заявка') ||
-      text.includes('появилась') ||
-      text.includes('создана заявка') ||
-      text.includes('поступила')
-    ) {
-      return 'application-new';
-    }
-    return 'status';
-  }
-  return 'other';
-}
 
 /** Префикс BPM-событий broadcast-канала — триггер обновления списка заявок. */
 const BPM_INSTANCE_EVENT_PREFIX = 'app/bpm/instance/';
@@ -164,30 +128,6 @@ let lastHeartbeatAt = 0;
 /** Время последнего входящего события realtime (message/publication), 0 — ещё не было. */
 let lastRealtimeEventAt = 0;
 
-/**
- * Построение websocket-URL из baseUrl учётки:
- * http -> ws, https -> wss, путь `/ws/v2/websocket`.
- */
-export function buildRealtimeUrl(baseUrl: string): string {
-  const raw = baseUrl === undefined || baseUrl === null ? '' : String(baseUrl);
-  const trimmed = raw.trim().replace(/\/+$/, '');
-  const withWsScheme = trimmed.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
-  return withWsScheme + WS_PATH;
-}
-
-/**
- * Имя пользовательского канала: `<service>:private.<company>#<userID>`.
- * Для базового сервиса service='' имя начинается с ':'.
- */
-export function buildPrivateChannel(service: string, company: string, userID: string): string {
-  return service + ':private.' + company + '#' + userID;
-}
-
-/** Все пользовательские каналы для company/userID (по одному на сервис). */
-export function buildRealtimeChannels(company: string, userID: string): string[] {
-  return REALTIME_SERVICES.map(service => buildPrivateChannel(service, company, userID));
-}
-
 /** Есть ли активное соединение realtime у учётки. */
 export function isRealtimeRunning(accountId: string): boolean {
   return entries.has(accountId);
@@ -218,51 +158,6 @@ export function isRealtimeSubscribed(accountId: string): boolean {
 /** Число активных соединений (диагностика/тесты). */
 export function realtimeConnectionsCount(): number {
   return entries.size;
-}
-
-/**
- * Имена cookie из строки вида `a=1; b=2` — только для диагностики.
- * Значения cookie в лог не попадают (безопасность).
- */
-function listCookieNames(cookies: string): string[] {
-  const names: string[] = [];
-  for (const part of cookies.split(';')) {
-    const separator = part.indexOf('=');
-    const name = (separator === -1 ? part : part.slice(0, separator)).trim();
-    if (name !== '') {
-      names.push(name);
-    }
-  }
-  return names;
-}
-
-/**
- * Фабрика кастомного WebSocket-конструктора, пробрасывающего cookie-сессию
- * аккаунта заголовком `Cookie` в HTTP-рукопожатие WebSocket.
- *
- * Так же авторизуется браузерный веб-клиент портала: same-origin WebSocket
- * несёт cookie автоматически, а ELMA API-токен Centrifugo НЕ принимает.
- * Паттерн — раздел «Custom WebSocket constructor» в README centrifuge:
- * 1 аргумент (url) → добавляем субпротокол и options, 2 аргумента
- * (url, protocols) → options третьим аргументом. `Authorization` не добавляем.
- *
- * @param cookieHeader Строка cookie аккаунта (account.cookies).
- */
-export function createRealtimeWebSocket(cookieHeader: string): typeof WebSocket {
-  const options = {headers: {Cookie: cookieHeader}};
-  const BaseWebSocket = globalThis.WebSocket as unknown as new (...args: any[]) => WebSocket;
-
-  const RealtimeWebSocket = class extends BaseWebSocket {
-    constructor(...args: any[]) {
-      if (args.length === 1) {
-        super(...[...args, 'centrifuge-json', options]);
-      } else {
-        super(...[...args, options]);
-      }
-    }
-  };
-
-  return RealtimeWebSocket as unknown as typeof WebSocket;
 }
 
 /**

@@ -1,4 +1,5 @@
-import {useAuthStore, accountRegistry} from '../../src/store/auth-store';
+import {useAuthStore} from '../../src/store/auth-store';
+import {accountRegistry} from '../../src/di/registry';
 import {useTasksStore} from '../../src/store/tasks-store';
 import {useFeedStore} from '../../src/store/feed-store';
 import {useCustomerServiceStore} from '../../src/store/customer-service-store';

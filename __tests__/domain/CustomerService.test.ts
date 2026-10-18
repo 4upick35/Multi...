@@ -22,6 +22,8 @@ import type {CustomerServicePersistence, AccountPersistence} from '../../src/int
 import type {ElmaAccount} from '../../src/types/account';
 import type {CollectionKey} from '../../src/types/customer-service';
 
+const throttle = {recordBanSignal: jest.fn()};
+
 const mockedFetchCollectionItems = apiFetchCollectionItems as jest.MockedFunction<typeof apiFetchCollectionItems>;
 const mockedSearchWorkerQuery = searchWorkerQuery as jest.MockedFunction<typeof searchWorkerQuery>;
 const mockedIsPortalAvailable = isPortalCustomerServiceAvailable as jest.MockedFunction<typeof isPortalCustomerServiceAvailable>;
@@ -67,7 +69,7 @@ describe('CustomerService — loadCollectionPage', () => {
     jest.clearAllMocks();
     csp = makeCSPersistence();
     ap = makeAccountPersistence();
-    service = new CustomerService(csp, ap);
+    service = new CustomerService(csp, ap, throttle);
   });
 
   it('worker/query коллекция: загружает страницу через searchWorkerQuery', async () => {
@@ -167,7 +169,7 @@ describe('CustomerService — searchCollection', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     csp = makeCSPersistence();
-    service = new CustomerService(csp, makeAccountPersistence());
+    service = new CustomerService(csp, makeAccountPersistence(), throttle);
   });
 
   it('поиск по worker/query коллекции через searchWorkerQuery', async () => {
@@ -253,7 +255,7 @@ describe('CustomerService — loadCollection', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     csp = makeCSPersistence();
-    service = new CustomerService(csp, makeAccountPersistence());
+    service = new CustomerService(csp, makeAccountPersistence(), throttle);
   });
 
   it('articles коллекция: специальный фильтр с public_article', async () => {
@@ -403,7 +405,7 @@ describe('CustomerService — loadCollection', () => {
 describe('CustomerService — markApplicationAccepted', () => {
   it('меняет статус на «Принято» и убирает кнопку приёма', () => {
     const csp = makeCSPersistence();
-    const service = new CustomerService(csp, makeAccountPersistence());
+    const service = new CustomerService(csp, makeAccountPersistence(), throttle);
     (csp.getItems as jest.Mock).mockReturnValue([
       {id: 'app-1', name: 'Заявка', status: 'Новая', accountId: 'acc-1', raw: {__id: 'app-1', show_button_get_application: true, __status: {status: 1}}},
       {id: 'app-2', name: 'Другая', status: 'Новая', accountId: 'acc-1', raw: {__id: 'app-2'}},
@@ -423,7 +425,7 @@ describe('CustomerService — markApplicationAccepted', () => {
 
   it('ничего не делает, если заявки нет в кэше', () => {
     const csp = makeCSPersistence();
-    const service = new CustomerService(csp, makeAccountPersistence());
+    const service = new CustomerService(csp, makeAccountPersistence(), throttle);
     (csp.getItems as jest.Mock).mockReturnValue([
       {id: 'app-2', name: 'Другая', status: 'Новая', accountId: 'acc-1', raw: {__id: 'app-2'}},
     ]);

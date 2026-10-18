@@ -6,36 +6,7 @@
 import {ElmaTask} from '../types/task';
 import {ElmaAccount} from '../types/account';
 import {ElmaRequestKind} from '../types/errors';
-import {useTasksStore} from '../store/tasks-store';
-import {useAuthStore} from '../store/auth-store';
-import {TaskService} from '../domain/TaskService';
-
-// ---------------------------------------------------------------------------
-// Адаптеры персистентности: подключаем zustand-сторы к доменному сервису
-// ---------------------------------------------------------------------------
-
-const taskPersistence = {
-  setTasks: (accountId: string, tasks: ElmaTask[]) =>
-    useTasksStore.getState().setTasks(accountId, tasks),
-  addOrUpdateTask: (accountId: string, task: ElmaTask) =>
-    useTasksStore.getState().addOrUpdateTask(accountId, task),
-  markSyncSuccess: (accountId: string) =>
-    useTasksStore.getState().markSyncSuccess(accountId),
-  markSyncError: (accountId: string, kind: ElmaRequestKind, msg: string) =>
-    useTasksStore.getState().markSyncError(accountId, kind, msg),
-};
-
-const accountPersistence = {
-  updateAccount: (accountId: string, data: Partial<ElmaAccount>) =>
-    useAuthStore.getState().updateAccount(accountId, data),
-};
-
-// ---------------------------------------------------------------------------
-// Singleton-экземпляр доменного сервиса
-// ---------------------------------------------------------------------------
-
-const taskService = new TaskService(taskPersistence, accountPersistence);
-
+import {taskService} from '../di/container';
 // ---------------------------------------------------------------------------
 // Re-export типов (обратная совместимость)
 // ---------------------------------------------------------------------------
