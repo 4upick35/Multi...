@@ -1,14 +1,15 @@
 import React, {useMemo, useState, useCallback} from 'react';
-import {View, StyleSheet, FlatList, TouchableOpacity, TextInput, RefreshControl} from 'react-native';
-import {Text, Chip} from 'react-native-paper';
+import {View, StyleSheet, FlatList, TouchableOpacity, TextInput, RefreshControl, Platform} from 'react-native';
+import {Text, Chip, Button} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useTasksStore} from '../../store/tasks-store';
 import {useAuthStore} from '../../store/auth-store';
 import {useUiStore} from '../../store/ui-store';
 import {useAppTheme} from '../../theme';
 import TaskCard from '../../components/TaskCard';
+import SkeletonBlock from '../../components/SkeletonBlock';
 import AccountAvatar from '../../components/AccountAvatar';
-import {TaskFilter} from '../../types/task';
+import {TaskFilter, ElmaTask} from '../../types/task';
 import {refreshAccountTasks} from '../../services/task-service';
 import {contrastText} from '../../utils/color';
 import {useRefresh} from '../../hooks/useRefresh';
@@ -93,6 +94,34 @@ export default function TasksListScreen({onTaskPress}: Props) {
 
   const hasActiveSyncStates = accounts.some(
     (a) => syncStates[a.id] && syncStates[a.id].status !== 'idle',
+  );
+
+  const hasLoadingSyncStates = accounts.some(
+    (a) =>
+      syncStates[a.id] && ['syncing', 'loading'].includes(syncStates[a.id].status),
+  );
+
+  const showTaskSkeletons =
+    displayTasks.length === 0 && (hasActiveSyncStates || hasLoadingSyncStates);
+
+  const handleTaskPress = useCallback(
+    (taskId: string, accountId: string) => onTaskPress(taskId, accountId),
+    [onTaskPress],
+  );
+
+  const renderItem = useCallback(
+    ({item}: {item: ElmaTask}) => {
+      const acc = accounts.find((a) => a.id === item.accountId);
+      return (
+        <TaskCard
+          task={item}
+          accountColor={acc?.color || '#999'}
+          accountName={acc?.name || '?'}
+          onPress={handleTaskPress}
+        />
+      );
+    },
+    [accounts, handleTaskPress],
   );
 
   const refreshData = useCallback(async () => {
@@ -195,22 +224,27 @@ export default function TasksListScreen({onTaskPress}: Props) {
       <FlatList
         data={displayTasks}
         keyExtractor={(item) => item.id}
-        renderItem={({item}) => {
-          const acc = accounts.find((a) => a.id === item.accountId);
-          return (
-            <TaskCard
-              task={item}
-              accountColor={acc?.color || '#999'}
-              accountName={acc?.name || '?'}
-              onPress={() => onTaskPress(item.id, item.accountId)}
-            />
-          );
-        }}
+        renderItem={renderItem}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyText}>Нет задач</Text>
-          </View>
+          showTaskSkeletons ? (
+            <View>
+              <SkeletonBlock height={84} style={styles.skeletonItem} />
+              <SkeletonBlock height={84} style={styles.skeletonItem} />
+              <SkeletonBlock height={84} style={styles.skeletonItem} />
+            </View>
+          ) : (
+            <View style={styles.empty}>
+              <Text style={styles.emptyText}>Нет задач</Text>
+              <Button mode="outlined" onPress={onRefresh} style={styles.emptyRefreshBtn}>
+                Обновить
+              </Button>
+            </View>
+          )
         }
         refreshControl={
           <RefreshControl
@@ -290,4 +324,6 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   list: {paddingBottom: 80},
   empty: {alignItems: 'center', marginTop: 80},
   emptyText: {fontSize: 16, color: c.textTertiary},
+  emptyRefreshBtn: {marginTop: 12, borderRadius: 8},
+  skeletonItem: {marginHorizontal: 16, marginVertical: 6},
 });

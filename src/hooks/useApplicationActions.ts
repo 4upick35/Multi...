@@ -9,9 +9,12 @@ import {
   runDocumentPackage,
 } from '../services/elma-api';
 import {ElmaRequestError} from '../types/errors';
-import type {MasterProfile} from '../services/elma-api';
+import type {MasterProfile, AcceptTemplate} from '../services/elma-api';
 import type {ElmaAccount} from '../types/account';
 import {loadCollection} from '../services/customer-service';
+import {enqueuePendingAction} from '../services/action-queue';
+import {isNetworkErrorText} from '../utils/error-text';
+import {hapticFeedback} from '../native/KeepAlive';
 
 export type ActionsState = 'idle' | 'loadingForm' | 'readyToSchedule' | 'sending' | 'done' | 'error';
 
@@ -25,6 +28,39 @@ interface UseApplicationActionsResult {
   submitVisit: (applicationId: string, visitDateIso: string, masterId: string) => Promise<boolean>;
   createDocumentPackage: (applicationId: string) => Promise<boolean>;
   cancelSchedule: () => void;
+}
+
+/** Текст алерта, когда действие уходит в очередь до восстановления сети. */
+const DEFERRED_ALERT_MESSAGE =
+  'Сеть недоступна. Визит будет отправлен автоматически при восстановлении связи.';
+
+/**
+ * Отложить назначение визита в очередь: повторим автоматически, когда сеть
+ * вернётся. Шаблон обязателен — без него очередь не сможет запустить процесс.
+ */
+function deferScheduleVisit(
+  account: ElmaAccount,
+  applicationId: string,
+  template: AcceptTemplate | null,
+  visitDateIso: string,
+  masterId: string,
+): Promise<void> {
+  if (!template) {
+    return Promise.resolve();
+  }
+  return enqueuePendingAction({
+    kind: 'schedule-visit',
+    accountId: account.id,
+    entityId: applicationId,
+    payload: {
+      applicationId,
+      templateId: template.templateId,
+      templateVersion: template.templateVersion,
+      formCode: template.formCode,
+      visitDateIso,
+      masterId,
+    },
+  });
 }
 
 /**
@@ -120,13 +156,16 @@ export function useApplicationActions(
       }
       setActionState('sending');
 
+      let template: AcceptTemplate | null = null;
+      let runOk = false;
+
       try {
         const templateResult = await getScheduleVisitTemplate(account);
         if (!templateResult.template) {
           showError('Не удалось получить шаблон процесса.');
           return false;
         }
-        const {template} = templateResult;
+        template = templateResult.template;
 
         const runResult = await runScheduleVisit(account, {
           templateId: template.templateId,
@@ -138,6 +177,8 @@ export function useApplicationActions(
         });
 
         if (runResult.ok) {
+          runOk = true;
+          hapticFeedback('success');
           setDefaultMasterId(null);
           setActionState('done');
           Alert.alert('Готово', 'Визит назначен.');
@@ -145,9 +186,27 @@ export function useApplicationActions(
           onDone?.();
           return true;
         }
+        if (isNetworkErrorText(runResult.error)) {
+          // Сеть недоступна — кладём визит в очередь, повторим автоматически.
+          await deferScheduleVisit(account, applicationId, template, visitDateIso, masterId);
+          Alert.alert('Отложено', DEFERRED_ALERT_MESSAGE);
+          setActionState('idle');
+          return false;
+        }
         showError(`Ошибка запуска: ${runResult.error || 'Неизвестная ошибка'}`);
         return false;
       } catch (e: unknown) {
+        if (
+          !runOk &&
+          e instanceof ElmaRequestError &&
+          (e.kind === 'network' || e.kind === 'timeout')
+        ) {
+          // Сеть упала на любом шаге — откладываем и показываем про отложенный запуск.
+          await deferScheduleVisit(account, applicationId, template, visitDateIso, masterId);
+          Alert.alert('Отложено', DEFERRED_ALERT_MESSAGE);
+          setActionState('idle');
+          return false;
+        }
         if (e instanceof ElmaRequestError) {
           showError(`Ошибка: ${e.message}`);
         } else {
@@ -182,6 +241,7 @@ export function useApplicationActions(
         });
 
         if (runResult.ok) {
+          hapticFeedback('success');
           setActionState('done');
           Alert.alert('Готово', 'Пакет документов сформирован.');
           await loadCollection(account, 'applications');

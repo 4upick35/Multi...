@@ -86,8 +86,8 @@ android {
         applicationId "com.multielma"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 21
-        versionName "2.7"
+        versionCode 31
+        versionName "2.8.8"
         ndk {
             abiFilters "arm64-v8a", "armeabi-v7a"
         }

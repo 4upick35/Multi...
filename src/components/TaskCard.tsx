@@ -10,11 +10,11 @@ type Props = {
   task: ElmaTask;
   accountColor: string;
   accountName: string;
-  onPress: () => void;
+  onPress: (taskId: string, accountId: string) => void;
 };
 type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
 
-export default function TaskCard({task, accountColor, accountName, onPress}: Props) {
+function TaskCard({task, accountColor, accountName, onPress}: Props) {
   const {colors} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -24,7 +24,7 @@ export default function TaskCard({task, accountColor, accountName, onPress}: Pro
   const priorityColor = task.priorityColor || '#9E9E9E';
 
   return (
-    <PressScale style={styles.card} onPress={onPress} activeOpacity={0.7}>
+    <PressScale style={styles.card} onPress={() => onPress(task.id, task.accountId || '')} activeOpacity={0.7}>
       <View style={styles.header}>
         <Chip
           compact
@@ -74,3 +74,5 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   statusChip: {},
   priorityChip: {},
 });
+
+export default React.memo(TaskCard);

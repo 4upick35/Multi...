@@ -31,6 +31,7 @@ interface AuthState {
   addAccount: (account: ElmaAccount) => Promise<void>;
   removeAccount: (id: string) => Promise<void>;
   updateAccount: (id: string, data: Partial<ElmaAccount>) => Promise<void>;
+  reorderAccounts: (orderedIds: string[]) => Promise<void>;
   loadAccounts: () => Promise<void>;
   getAccount: (id: string) => ElmaAccount | undefined;
 }
@@ -190,6 +191,13 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   updateAccount: async (id: string, data: Partial<ElmaAccount>) => {
     accountRegistry.update(id, data);
+    const accounts = accountRegistry.getAll();
+    set({accounts});
+    await persistAccounts(accounts);
+  },
+
+  reorderAccounts: async (orderedIds: string[]) => {
+    accountRegistry.reorder(orderedIds);
     const accounts = accountRegistry.getAll();
     set({accounts});
     await persistAccounts(accounts);

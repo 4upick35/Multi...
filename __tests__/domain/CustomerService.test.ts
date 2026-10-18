@@ -399,3 +399,37 @@ describe('CustomerService — loadCollection', () => {
     expect(csp.getItems('acc-1', 'applications')).toEqual([]);
   });
 });
+
+describe('CustomerService — markApplicationAccepted', () => {
+  it('меняет статус на «Принято» и убирает кнопку приёма', () => {
+    const csp = makeCSPersistence();
+    const service = new CustomerService(csp, makeAccountPersistence());
+    (csp.getItems as jest.Mock).mockReturnValue([
+      {id: 'app-1', name: 'Заявка', status: 'Новая', accountId: 'acc-1', raw: {__id: 'app-1', show_button_get_application: true, __status: {status: 1}}},
+      {id: 'app-2', name: 'Другая', status: 'Новая', accountId: 'acc-1', raw: {__id: 'app-2'}},
+    ]);
+
+    service.markApplicationAccepted('acc-1', 'app-1');
+
+    expect(csp.setItems).toHaveBeenCalledTimes(1);
+    const call = (csp.setItems as jest.Mock).mock.calls[0];
+    expect(call[0]).toBe('acc-1');
+    expect(call[1]).toBe('applications');
+    expect(call[2][0].status).toBe('Принято');
+    expect(call[2][0].raw.show_button_get_application).toBe(false);
+    expect(call[2][0].raw.__status).toEqual({status: 2, name: 'Принято'});
+    expect(call[2][1].raw).toEqual({__id: 'app-2'});
+  });
+
+  it('ничего не делает, если заявки нет в кэше', () => {
+    const csp = makeCSPersistence();
+    const service = new CustomerService(csp, makeAccountPersistence());
+    (csp.getItems as jest.Mock).mockReturnValue([
+      {id: 'app-2', name: 'Другая', status: 'Новая', accountId: 'acc-1', raw: {__id: 'app-2'}},
+    ]);
+
+    service.markApplicationAccepted('acc-1', 'missing');
+
+    expect(csp.setItems).not.toHaveBeenCalled();
+  });
+});

@@ -13,6 +13,9 @@ import type {AcceptTemplate, CaptchaKeys} from '../services/elma-api';
 import type {ElmaAccount} from '../types/account';
 import {logDiag, shareDiagLog} from '../diag/accept-log';
 import {clearAcceptTemplates} from '../services/accept-template-cache';
+import {markApplicationAccepted} from '../services/customer-service';
+import {enqueuePendingAction} from '../services/action-queue';
+import {hapticFeedback} from '../native/KeepAlive';
 
 export type AcceptFlowState =
   | 'idle'
@@ -150,19 +153,37 @@ export function useAcceptApplication(
         logDiag('run', 'ok=' + runResult.ok + (runResult.error ? ' err=' + runResult.error : ''));
         if (runResult.ok) {
           setFlowState('done');
+          markApplicationAccepted(account.id, applicationId);
+          hapticFeedback('success');
           Alert.alert('Готово', 'Заявка принята.');
           shareOnce('заявка принята');
           onDone?.(account);
         } else {
           clearAcceptTemplates().catch(() => {});
+          hapticFeedback('error');
           showError(`Ошибка запуска: ${runResult.error || 'Неизвестная ошибка'}`);
         }
       } catch (e: unknown) {
         logDiag('exception', e instanceof Error ? (e.name + ': ' + e.message) : String(e));
         clearAcceptTemplates().catch(() => {});
+        if (
+          e instanceof ElmaRequestError &&
+          (e.kind === 'network' || e.kind === 'timeout') &&
+          applicationIdRef.current.trim() !== ''
+        ) {
+          // Сеть упала: запоминаем заявку до восстановления связи.
+          // Автоматически НЕ выполняем — принятие требует капчи.
+          await enqueuePendingAction({
+            kind: 'accept-application',
+            accountId: account.id,
+            entityId: applicationIdRef.current,
+            payload: {applicationId: applicationIdRef.current},
+          });
+        }
         if (e instanceof ElmaRequestError) {
           showError(`Ошибка: ${e.message}`);
         } else {
+          hapticFeedback('error');
           showError('Неизвестная ошибка при проверке капчи.');
         }
       }

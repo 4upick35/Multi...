@@ -42,6 +42,14 @@ interface SettingsState {
   hydrated: boolean;
   themeMode: ThemeMode;
   priorityAccountIds: string[];
+  /** Тихие часы: без звука/вибрации в указанный интервал. */
+  quietHoursEnabled: boolean;
+  /** Начало тихих часов, HH:MM. */
+  quietHoursFrom: string;
+  /** Конец тихих часов, HH:MM. */
+  quietHoursTo: string;
+  /** Учётки, для которых уведомления полностью отключены. */
+  notificationDisabledAccountIds: string[];
 }
 
 interface SettingsActions {
@@ -93,15 +101,45 @@ function normalizePriorityIds(value: unknown): string[] {
   return result;
 }
 
+/** Время тихих часов в формате HH:MM (регулярка ^([01]\d|2[0-3]):[0-5]\d$); иначе фолбэк. */
+function normalizeQuietTime(value: unknown, fallback: string): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^([01]\d|2[0-3]):[0-5]\d$/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  return fallback;
+}
+
+/** Отключённые учётки: только непустые строки, без дублей. */
+function normalizeDisabledIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const id = item.trim();
+    if (id === '' || result.includes(id)) {
+      continue;
+    }
+    result.push(id);
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
 function persistSettings(state: SettingsState): void {
-  const {pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, newApplicationSoundId, newApplicationVolume, otherSoundId, otherVolume, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds} = state;
+  const {pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, newApplicationSoundId, newApplicationVolume, otherSoundId, otherVolume, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds, quietHoursEnabled, quietHoursFrom, quietHoursTo, notificationDisabledAccountIds} = state;
   AsyncStorage.setItem(
     STORAGE_KEYS.settings,
-    JSON.stringify({pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, newApplicationSoundId, newApplicationVolume, otherSoundId, otherVolume, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds}),
+    JSON.stringify({pollIntervalSec, keepScreenOn, backgroundSync, serverAddress, notificationsEnabled, notifyNewTasks, notifyNewApplications, notifyStatusChangesApplications, notifyStatusChangesTasks, soundEnabled, vibrationEnabled, alertRepeatCount, newApplicationSoundId, newApplicationVolume, otherSoundId, otherVolume, floatingWidgetEnabled, syncPaused, pushMode, themeMode, priorityAccountIds, quietHoursEnabled, quietHoursFrom, quietHoursTo, notificationDisabledAccountIds}),
   ).catch(() => {});
 }
 
@@ -129,6 +167,10 @@ export const useSettingsStore = create<SettingsState & SettingsActions>(
     hydrated: false,
     themeMode: 'light',
     priorityAccountIds: [],
+    quietHoursEnabled: false,
+    quietHoursFrom: '22:00',
+    quietHoursTo: '07:00',
+    notificationDisabledAccountIds: [],
 
     loadSettings: async () => {
       try {
@@ -193,6 +235,12 @@ export const useSettingsStore = create<SettingsState & SettingsActions>(
             hydrated: true,
             themeMode: resolvedMode,
             priorityAccountIds: normalizePriorityIds(parsed.priorityAccountIds),
+            quietHoursEnabled: parsed.quietHoursEnabled === true,
+            quietHoursFrom: normalizeQuietTime(parsed.quietHoursFrom, '22:00'),
+            quietHoursTo: normalizeQuietTime(parsed.quietHoursTo, '07:00'),
+            notificationDisabledAccountIds: normalizeDisabledIds(
+              parsed.notificationDisabledAccountIds,
+            ),
           });
         } else {
           set({hydrated: true});
@@ -270,6 +318,23 @@ export const useSettingsStore = create<SettingsState & SettingsActions>(
       }
       if (partial.priorityAccountIds !== undefined) {
         next.priorityAccountIds = normalizePriorityIds(partial.priorityAccountIds);
+      }
+      if (partial.quietHoursEnabled !== undefined) {
+        next.quietHoursEnabled = partial.quietHoursEnabled;
+      }
+      if (partial.quietHoursFrom !== undefined) {
+        next.quietHoursFrom = normalizeQuietTime(
+          partial.quietHoursFrom,
+          current.quietHoursFrom,
+        );
+      }
+      if (partial.quietHoursTo !== undefined) {
+        next.quietHoursTo = normalizeQuietTime(partial.quietHoursTo, current.quietHoursTo);
+      }
+      if (partial.notificationDisabledAccountIds !== undefined) {
+        next.notificationDisabledAccountIds = normalizeDisabledIds(
+          partial.notificationDisabledAccountIds,
+        );
       }
       set({...current, ...next} as SettingsState);
       persistSettings(get() as SettingsState);

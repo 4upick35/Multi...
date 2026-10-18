@@ -185,6 +185,11 @@ export class TaskService {
   // Публичные методы
   // -----------------------------------------------------------------------
 
+  /** Нормализовать одну задачу из ответа GET /api/bpm/tasks/{uuid}. */
+  taskFromRaw(raw: Record<string, unknown>, account: ElmaAccount): ElmaTask {
+    return this.normalizeRawTask(raw, account, new Map());
+  }
+
   /**
    * Загрузить и нормализовать задачи аккаунта.
    * Порядок operations идентичен оригинальному refreshAccountTasks.

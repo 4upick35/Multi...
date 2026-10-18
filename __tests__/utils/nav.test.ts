@@ -5,8 +5,8 @@ describe('isAllowedNavTarget', () => {
     expect(isAllowedNavTarget('applications')).toBe(true);
   });
 
-  it('rejects tasks', () => {
-    expect(isAllowedNavTarget('tasks')).toBe(false);
+  it('allows tasks', () => {
+    expect(isAllowedNavTarget('tasks')).toBe(true);
   });
 
   it('rejects null', () => {

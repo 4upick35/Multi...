@@ -1,9 +1,12 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useAppTheme} from '../../theme';
-import {View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, ScrollView, AppState} from 'react-native';
+import {View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, ScrollView, AppState, Platform} from 'react-native';
 import {Text, Button, Chip} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BackButton from '../../components/BackButton';
+import SkeletonBlock from '../../components/SkeletonBlock';
+import DraggableChip from '../../components/DraggableChip';
+import {useAuthStore} from '../../store/auth-store';
 import CaptchaModal from '../../components/CaptchaModal';
 import {useCustomerServiceStore, EMPTY_COLLECTION_ITEMS} from '../../store/customer-service-store';
 import {CollectionMeta, CollectionItem, LARGE_COLLECTIONS} from '../../types/customer-service';
@@ -33,6 +36,8 @@ type Props = {
   onOpenCalendar?: () => void;
 };
 
+const CHIP_GAP = 6;
+
 export default function CollectionListScreen({collection, initialAccountId, filterSeq, onSelectItem, onBack, onOpenCalendar}: Props) {
   const {account: activeAccount, accountId: resolvedAccountId, accounts} = useActiveAccount();
   const {colors, mode} = useAppTheme();
@@ -42,6 +47,111 @@ export default function CollectionListScreen({collection, initialAccountId, filt
 
   const isApplications = collection.key === 'applications';
   const syncPaused = useSettingsStore(s => s.syncPaused);
+  const reorderAccounts = useAuthStore(s => s.reorderAccounts);
+
+  // Перетаскивание чипов учёток: долгое нажатие открепляет чип,
+  // остальные чипы раздвигаются под место вставки.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragShift, setDragShift] = useState<{from: number; to: number; shiftPx: number} | null>(null);
+  const chipLayouts = useRef<Record<number, {x: number; width: number}>>({});
+  const dragRef = useRef<{
+    id: string;
+    fromIndex: number;
+    startCx: number;
+    width: number;
+    centers: Array<{id: string; cx: number}>;
+    targetIndex: number;
+  } | null>(null);
+  const registerChipLayout = useCallback((index: number, layout: {x: number; width: number}) => {
+    chipLayouts.current[index] = layout;
+  }, []);
+
+  const handleChipDragStart = useCallback(
+    (index: number) => {
+      const dragged = accounts[index];
+      const own = chipLayouts.current[index];
+      if (!dragged || !own) {
+        return;
+      }
+      const centers: Array<{id: string; cx: number}> = [];
+      accounts.forEach((account, i) => {
+        const layout = chipLayouts.current[i];
+        if (layout) {
+          centers.push({id: account.id, cx: layout.x + layout.width / 2});
+        }
+      });
+      dragRef.current = {
+        id: dragged.id,
+        fromIndex: index,
+        startCx: own.x + own.width / 2,
+        width: own.width,
+        centers,
+        targetIndex: index,
+      };
+      setDraggingId(dragged.id);
+      setDragShift({from: index, to: index, shiftPx: own.width + CHIP_GAP});
+    },
+    [accounts],
+  );
+
+  const handleChipDragMove = useCallback((index: number, dx: number) => {
+    const drag = dragRef.current;
+    if (!drag) {
+      return;
+    }
+    const draggedCx = drag.startCx + dx;
+    let to = 0;
+    drag.centers.forEach(center => {
+      if (center.id !== drag.id && center.cx < draggedCx) {
+        to += 1;
+      }
+    });
+    if (to !== drag.targetIndex) {
+      drag.targetIndex = to;
+      setDragShift({from: drag.fromIndex, to, shiftPx: drag.width + CHIP_GAP});
+    }
+  }, []);
+
+  const finishChipDrag = useCallback(() => {
+    dragRef.current = null;
+    setDraggingId(null);
+    setDragShift(null);
+  }, []);
+
+  const handleChipDragEnd = useCallback(
+    (_index: number) => {
+      const drag = dragRef.current;
+      finishChipDrag();
+      if (!drag) {
+        return;
+      }
+      const to = drag.targetIndex;
+      if (to === drag.fromIndex) {
+        return;
+      }
+      const ids = accounts.map(account => account.id);
+      const [moved] = ids.splice(drag.fromIndex, 1);
+      ids.splice(to, 0, moved);
+      reorderAccounts(ids).catch(() => {});
+    },
+    [accounts, finishChipDrag, reorderAccounts],
+  );
+
+  const chipShift = useCallback(
+    (index: number): number => {
+      if (!dragShift || index === dragShift.from) {
+        return 0;
+      }
+      if (dragShift.to > dragShift.from && index > dragShift.from && index <= dragShift.to) {
+        return -dragShift.shiftPx;
+      }
+      if (dragShift.to < dragShift.from && index >= dragShift.to && index < dragShift.from) {
+        return dragShift.shiftPx;
+      }
+      return 0;
+    },
+    [dragShift],
+  );
 
   // Локальный фильтр учётки: null = Все, string = конкретная учётка.
   const [filterAccountId, setFilterAccountId] = useState<string | null>(activeAccountId ?? null);
@@ -478,11 +588,7 @@ export default function CollectionListScreen({collection, initialAccountId, filt
 
       {accounts.length > 1 && (
         <View style={styles.accountChipsWrap}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            bounces={false}
-            contentContainerStyle={styles.accountChipsRow}>
+          <View style={styles.accountChipsRow}>
             <TouchableOpacity
               style={[styles.accountFilterChip, !filterAccountId && styles.accountFilterChipAll]}
               onPress={() => setFilterAccountId(null)}>
@@ -490,18 +596,27 @@ export default function CollectionListScreen({collection, initialAccountId, filt
                 Все
               </Text>
             </TouchableOpacity>
-            {accounts.map((acc) => {
+            {accounts.map((acc, index) => {
               const active = filterAccountId === acc.id;
               const accTs = lastRefreshAt[acc.id];
               const chipBg = active ? acc.color : (mode === 'dark' ? mixWithBlack(acc.color, 0.55) : mixWithWhite(acc.color, 0.7));
               return (
-                <TouchableOpacity
+                <DraggableChip
                   key={acc.id}
+                  index={index}
+                  active={draggingId === acc.id}
+                  disabled={draggingId !== null && draggingId !== acc.id}
+                  shiftPx={chipShift(index)}
                   style={[
                     styles.accountFilterChip,
                     {backgroundColor: chipBg},
                   ]}
-                  onPress={() => setFilterAccountId(active ? null : acc.id)}>
+                  onPress={() => setFilterAccountId(active ? null : acc.id)}
+                  onDragStart={handleChipDragStart}
+                  onDragMove={handleChipDragMove}
+                  onDragEnd={handleChipDragEnd}
+                  onDragCancel={finishChipDrag}
+                  registerLayout={registerChipLayout}>
                   <Text
                     numberOfLines={1}
                     style={[
@@ -519,10 +634,10 @@ export default function CollectionListScreen({collection, initialAccountId, filt
                       {formatTimeHMS(new Date(accTs))}
                     </Text>
                   ) : null}
-                </TouchableOpacity>
+                </DraggableChip>
               );
             })}
-          </ScrollView>
+          </View>
         </View>
       )}
 
@@ -600,6 +715,10 @@ export default function CollectionListScreen({collection, initialAccountId, filt
         data={displayItems}
         keyExtractor={(item) => String(item.accountId || '') + ':' + item.id}
         renderItem={renderItem}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
@@ -613,10 +732,20 @@ export default function CollectionListScreen({collection, initialAccountId, filt
         }
         ListFooterComponent={renderFooter()}
         ListEmptyComponent={
-          !refreshing && !isLoading && !hasError ? (
+          isLoading && itemsList.length === 0 ? (
+            <View>
+              <SkeletonBlock height={64} style={styles.skeletonItem} />
+              <SkeletonBlock height={64} style={styles.skeletonItem} />
+              <SkeletonBlock height={64} style={styles.skeletonItem} />
+              <SkeletonBlock height={64} style={styles.skeletonItem} />
+            </View>
+          ) : !refreshing && !hasError ? (
             <View style={styles.empty}>
               <Icon name="file-document-outline" size={48} color={colors.muted} />
               <Text style={styles.emptyText}>Нет данных</Text>
+              <Button mode="outlined" onPress={onRefresh} style={styles.emptyRefreshBtn}>
+                Обновить
+              </Button>
             </View>
           ) : null
         }
@@ -721,6 +850,8 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   },
   empty: {alignItems: 'center', marginTop: 80},
   emptyText: {fontSize: 16, color: c.textTertiary, marginTop: 8},
+  emptyRefreshBtn: {marginTop: 12, borderRadius: 8},
+  skeletonItem: {marginBottom: 8},
   footer: {
     flexDirection: 'row',
     alignItems: 'center',

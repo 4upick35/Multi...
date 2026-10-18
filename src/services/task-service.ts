@@ -56,6 +56,13 @@ export async function refreshAccountTasks(
   return taskService.refreshAccountTasks(account);
 }
 
+export function taskFromRaw(
+  raw: Record<string, unknown>,
+  account: ElmaAccount,
+): ElmaTask {
+  return taskService.taskFromRaw(raw, account);
+}
+
 // ---------------------------------------------------------------------------
 // Статусы / приоритеты — делегирование в domain/TaskService (DRY)
 // ---------------------------------------------------------------------------

@@ -29,6 +29,8 @@ import {VisitConfirmationBlock} from '../../components/VisitConfirmationBlock';
 import SparePartPickerModal from '../../components/SparePartPickerModal';
 import {taskNodeIdFromPath, isTaskClosed} from '../../domain/TaskService';
 import {getRemainingPauseMs} from '../../infrastructure/AccountThrottle';
+import {enqueuePendingAction} from '../../services/action-queue';
+import {isNetworkErrorText} from '../../utils/error-text';
 import {SUBMIT_MIN_GAP_MS} from '../../config/constants';
 import {isUuid} from '../../utils/uuid';
 import QuantumLoader from '../../components/QuantumLoader';
@@ -427,7 +429,7 @@ export default function ExecutionScreen({taskId: _taskId, accountId, taskUuid, o
       {
         text: 'Камера',
         onPress: async () => {
-          const result = await launchCamera({mediaType: 'photo', quality: 0.8});
+          const result = await launchCamera({mediaType: 'photo', quality: 0.8, maxWidth: 1600, maxHeight: 1600});
           if (result.assets && result.assets.length > 0) {
             addFilesAndUpload(result.assets);
           }
@@ -436,7 +438,7 @@ export default function ExecutionScreen({taskId: _taskId, accountId, taskUuid, o
       {
         text: 'Галерея',
         onPress: async () => {
-          const result = await launchImageLibrary({mediaType: 'photo', quality: 0.8, selectionLimit: 5});
+          const result = await launchImageLibrary({mediaType: 'photo', quality: 0.8, maxWidth: 1600, maxHeight: 1600, selectionLimit: 5});
           if (result.assets && result.assets.length > 0) {
             addFilesAndUpload(result.assets);
           }
@@ -628,6 +630,20 @@ export default function ExecutionScreen({taskId: _taskId, accountId, taskUuid, o
         if (result.ok) {
           Alert.alert('Готово', 'Действие выполнено');
           onBack();
+        } else if (isNetworkErrorText(result.error)) {
+          // Сеть недоступна: откладываем и повторим автоматически, когда
+          // связь вернётся. Обычную ошибку не показываем и выходы не прячем —
+          // их понадобится список, если очередь отработает не с первого раза.
+          await enqueuePendingAction({
+            kind: 'submit-exit',
+            accountId,
+            entityId: taskUuid,
+            payload: {taskUuid, instanceId, exitId: exit.id, values: collected.body},
+          });
+          Alert.alert(
+            'Отложено',
+            'Сеть недоступна. Действие будет отправлено автоматически при восстановлении связи.',
+          );
         } else {
           // Состояние задачи на сервере могло измениться — «дожимать»
           // остальные кнопки вслепую нельзя: скрываем список выходов.

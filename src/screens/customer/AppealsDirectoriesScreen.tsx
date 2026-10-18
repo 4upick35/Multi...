@@ -112,6 +112,8 @@ export default function AppealsDirectoriesScreen({onBack}: Props) {
         <FlatList
           data={tree}
           keyExtractor={item => item.id}
+          initialNumToRender={10}
+          windowSize={7}
           renderItem={({item}) => <TreeNodeItem node={item} depth={0} styles={styles} />}
           contentContainerStyle={styles.list}
           refreshControl={

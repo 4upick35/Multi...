@@ -14,6 +14,7 @@ import {
 } from '../services/seen-application-alerts';
 import {logDiag} from '../diag/accept-log';
 import {maskValue} from '../utils/mask';
+import {isQuietHours} from '../utils/quiet-hours';
 import {CollectionItem} from '../types/customer-service';
 import {ElmaAccount} from '../types/account';
 import * as CustomerServiceStore from '../store/customer-service-store';
@@ -32,6 +33,10 @@ export interface AlertSettings {
   newApplicationSoundId: string;
   newApplicationVolume: number;
   floatingWidgetEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursFrom: string;
+  quietHoursTo: string;
+  notificationDisabledAccountIds: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -160,11 +165,18 @@ export function useApplicationAlerts(): void {
         diagLog('alert-skip reason=disabled account=' + maskValue(accountId) + ' title=' + title);
         return;
       }
+      if (settings.notificationDisabledAccountIds?.includes(accountId)) {
+        diagLog('alert-skip reason=account-muted account=' + maskValue(accountId) + ' title=' + title);
+        return;
+      }
+      const quiet =
+        settings.quietHoursEnabled === true &&
+        isQuietHours(new Date(), settings.quietHoursFrom || '22:00', settings.quietHoursTo || '07:00');
       try {
         if (typeof keepAliveMod.alertNewItem === 'function') {
           keepAliveMod.alertNewItem(title, body, {
-            sound: settings.soundEnabled,
-            vibration: settings.vibrationEnabled,
+            sound: settings.soundEnabled && !quiet,
+            vibration: settings.vibrationEnabled && !quiet,
             repeatCount: settings.alertRepeatCount,
             soundId: settings.newApplicationSoundId,
             volume: settings.newApplicationVolume,

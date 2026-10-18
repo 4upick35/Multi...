@@ -170,24 +170,26 @@ describe('applications-sync — foreground-ускорение', () => {
     expect(callTimes[2] - callTimes[1]).toBeLessThan(NORMAL_INTERVAL_MS);
   });
 
-  it('без setForegroundAccount поведение прежнее: разнос 10 с, интервал 15 с', async () => {
+  it('без setForegroundAccount: без изменений данных интервал адаптивно растёт', async () => {
     startApplicationsSync([acc1]);
     await jest.advanceTimersByTimeAsync(0);
     expect(mockLoadCollection).toHaveBeenCalledTimes(1);
 
-    // До истечения обычного интервала (15 с) повторов нет.
+    // 1-й повтор: idle=0 → обычный интервал (разнос очереди 15 с его маскирует).
     await tickFor(NORMAL_INTERVAL_MS - 1_000);
     expect(mockLoadCollection).toHaveBeenCalledTimes(1);
     await tickFor(1_000);
     expect(mockLoadCollection).toHaveBeenCalledTimes(2);
     expect(callTimes[1] - callTimes[0]).toBe(NORMAL_INTERVAL_MS);
 
-    // Второй повтор — снова через обычный интервал.
-    await tickFor(NORMAL_INTERVAL_MS - 1_000);
+    // 2-й повтор: sig не изменился → idle=1 → ×2 ±20%
+    // (Math.random→0 → effective − 20% = 24 с вместо 15 с).
+    const ADAPTIVE_INTERVAL_MS = NORMAL_INTERVAL_MS * 2 - Math.round(NORMAL_INTERVAL_MS * 2 * 0.2);
+    await tickFor(ADAPTIVE_INTERVAL_MS - 1_000);
     expect(mockLoadCollection).toHaveBeenCalledTimes(2);
     await tickFor(1_000);
     expect(mockLoadCollection).toHaveBeenCalledTimes(3);
-    expect(callTimes[2] - callTimes[1]).toBe(NORMAL_INTERVAL_MS);
+    expect(callTimes[2] - callTimes[1]).toBe(ADAPTIVE_INTERVAL_MS);
     // Для одной учётки разнос очереди совпадает с её интервалом опроса.
     expect(GAP_MS).toBe(NORMAL_INTERVAL_MS);
   });

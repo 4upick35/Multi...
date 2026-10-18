@@ -1,12 +1,14 @@
 import React, {useCallback, useEffect, useRef, useState, useMemo} from 'react';
 import {View, TouchableOpacity, Text, StyleSheet, StatusBar, Platform, BackHandler, Animated} from 'react-native';
 import {PaperProvider, MD3LightTheme, MD3DarkTheme} from 'react-native-paper';
+import {GestureHandlerRootView} from 'react-native-gesture-handler';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 
 import {useAuthStore} from './src/store/auth-store';
 import {useSettingsStore} from './src/store/settings-store';
 import {useUiStore} from './src/store/ui-store';
 import {useFeedStore} from './src/store/feed-store';
+import {useCustomerServiceStore} from './src/store/customer-service-store';
 import {useAppTheme} from './src/theme';
 import {usePolling} from './src/hooks/usePolling';
 import {useNotifications} from './src/hooks/useNotifications';
@@ -14,6 +16,9 @@ import {useApplicationAlerts} from './src/hooks/useApplicationAlerts';
 import {useApplicationsSync} from './src/hooks/useApplicationsSync';
 import {useKeepAlive} from './src/hooks/useKeepAlive';
 import {useFloatingWidget} from './src/hooks/useFloatingWidget';
+import {useNetworkStatus} from './src/hooks/useNetworkStatus';
+import {usePendingActions} from './src/hooks/usePendingActions';
+import {SyncBanners} from './src/components/SyncBanners';
 import {requestNotificationPermission} from './src/utils/permissions';
 import {isAllowedNavTarget, sanitizeNavAccountId} from './src/utils/nav';
 import {pageAccessService} from './src/domain/PageAccessService';
@@ -25,6 +30,7 @@ import TasksListScreen from './src/screens/tasks/TasksListScreen';
 import TaskDetailScreen from './src/screens/tasks/TaskDetailScreen';
 import ExecutionScreen from './src/screens/tasks/ExecutionScreen';
 import SettingsScreen from './src/screens/tasks/SettingsScreen';
+import HealthScreen from './src/screens/tasks/HealthScreen';
 import ProfileScreen from './src/screens/tasks/ProfileScreen';
 import CustomerServiceScreen from './src/screens/customer/CustomerServiceScreen';
 import CollectionListScreen from './src/screens/customer/CollectionListScreen';
@@ -49,6 +55,7 @@ type Screen =
   | 'AppealsDirectories'
   | 'ApplicationsCalendar'
   | 'Docflow'
+  | 'Health'
   | {screen: 'TaskDetail'; taskId: string; accountId: string}
   | {screen: 'Execution'; taskId: string; accountId: string; taskUuid: string}
   | {screen: 'CollectionList'; collection: CollectionMeta; accountId?: string | null; filterSeq?: number}
@@ -102,6 +109,8 @@ export default function App() {
   useApplicationAlerts();
   useApplicationsSync();
   useKeepAlive();
+  const online = useNetworkStatus();
+  const {actions, retry} = usePendingActions(online);
 
   const push = useCallback((next: Screen) => {
     setHistory((prev) => [...prev, next]);
@@ -158,25 +167,104 @@ export default function App() {
   // Переход по уведомлению. На холодном старте он приходит раньше, чем загружены
   // учётки, поэтому применяем его не сразу, а когда приложение выбрало стартовый экран.
   const pendingNavRef = useRef<NavigationTarget | null>(null);
+  // Заявка из уведомления, которой ещё нет в сторе: открываем карточку, когда
+  // элемент появится (эффект ниже), либо сбрасываем по таймауту.
+  const [pendingOpenApplication, setPendingOpenApplication] = useState<{
+    id: string;
+    accountId: string;
+  } | null>(null);
 
   const applyPendingNavigation = useCallback(() => {
     const nav = pendingNavRef.current;
     if (nav === null || !isAllowedNavTarget(nav.target)) {
       return;
     }
-    const appsMeta = COLLECTIONS.find(c => c.key === 'applications');
-    if (!appsMeta || !canShowService) {
+    if (!canShowService) {
+      return;
+    }
+    const knownIds = accounts.map((a) => a.id);
+    const accountId =
+      sanitizeNavAccountId(nav.accountId, knownIds) ??
+      activeAccountId ??
+      accounts[0]?.id ??
+      null;
+    if (!accountId) {
       return;
     }
     pendingNavRef.current = null;
     accountFilterSeqRef.current += 1;
+
+    if (nav.target === 'tasks') {
+      if (nav.taskId) {
+        push({screen: 'TaskDetail', taskId: nav.taskId, accountId});
+      }
+      return;
+    }
+
+    const appsMeta = COLLECTIONS.find(c => c.key === 'applications');
+    if (!appsMeta) {
+      return;
+    }
+    if (nav.applicationId) {
+      const item = useCustomerServiceStore
+        .getState()
+        .getItems(accountId, 'applications')
+        .find((i) => i.id === nav.applicationId);
+      if (item) {
+        push({screen: 'CollectionDetail', item, collection: appsMeta});
+        return;
+      }
+      setPendingOpenApplication({id: nav.applicationId, accountId});
+    }
     setHistory([{
       screen: 'CollectionList',
       collection: appsMeta,
-      accountId: sanitizeNavAccountId(nav.accountId, accounts.map((a) => a.id)),
+      accountId,
       filterSeq: accountFilterSeqRef.current,
     }]);
-  }, [canShowService, accounts]);
+  }, [canShowService, accounts, activeAccountId, push]);
+
+  // Заявка из уведомления ещё не в сторе: подписываемся на обновления и открываем
+  // карточку, как только элемент появится; через 10 секунд попытку отменяем.
+  useEffect(() => {
+    if (pendingOpenApplication === null) {
+      return;
+    }
+    const {id, accountId} = pendingOpenApplication;
+    const appsMeta = COLLECTIONS.find(c => c.key === 'applications');
+    if (!appsMeta) {
+      setPendingOpenApplication(null);
+      return;
+    }
+    let finished = false;
+    const tryOpen = () => {
+      if (finished) {
+        return;
+      }
+      const item = useCustomerServiceStore
+        .getState()
+        .getItems(accountId, 'applications')
+        .find((i) => i.id === id);
+      if (!item) {
+        return;
+      }
+      finished = true;
+      setPendingOpenApplication(null);
+      push({screen: 'CollectionDetail', item, collection: appsMeta});
+    };
+    tryOpen();
+    const unsub = useCustomerServiceStore.subscribe(tryOpen);
+    const timer = setTimeout(() => {
+      finished = true;
+      unsub();
+      setPendingOpenApplication(null);
+    }, 10000);
+    return () => {
+      finished = true;
+      unsub();
+      clearTimeout(timer);
+    };
+  }, [pendingOpenApplication, push]);
 
   const handleOverlayNavigation = useCallback((nav: NavigationTarget) => {
     pendingNavRef.current = nav;
@@ -317,8 +405,11 @@ export default function App() {
       <SettingsScreen
         onAddAccount={() => push('AddAccount')}
         onProfile={() => push('Profile')}
+        onHealth={() => push('Health')}
       />
     );
+  } else if (screenName === 'Health') {
+    content = <HealthScreen onBack={goBack} />;
   } else if (screenName === 'Profile') {
     content = <ProfileScreen onBack={goBack} />;
   } else if (screenName === 'Feed') {
@@ -411,6 +502,7 @@ export default function App() {
       backgroundColor: colors.background,
       paddingTop: TOP_PADDING,
     },
+    gestureRoot: {flex: 1},
     content: {flex: 1},
     tabBar: {
       flexDirection: 'row',
@@ -430,9 +522,11 @@ export default function App() {
   }), [colors, tabBarBackground, tabBorderColor, tabTextActiveColor]);
 
   return (
-    <PaperProvider theme={mode === 'dark' ? MD3DarkTheme : MD3LightTheme}>
+    <GestureHandlerRootView style={appStyles.gestureRoot}>
+      <PaperProvider theme={mode === 'dark' ? MD3DarkTheme : MD3LightTheme}>
       <StatusBar barStyle={mode === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.surface} />
       <View style={appStyles.root}>
+        <SyncBanners online={online} actions={actions} onRetry={retry} />
         <Animated.View style={[appStyles.content, {opacity: screenFade, transform: [{translateY: screenFade.interpolate({inputRange: [0, 1], outputRange: [8, 0]})}]}]}>
           {content}
         </Animated.View>
@@ -479,5 +573,6 @@ export default function App() {
         )}
       </View>
     </PaperProvider>
+    </GestureHandlerRootView>
   );
 }

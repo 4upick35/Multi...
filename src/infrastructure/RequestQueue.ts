@@ -85,6 +85,15 @@ export class RequestQueue {
 
   // --- Приватные методы ---
 
+  getStats(): Array<{origin: string; busy: number; pending: number; lastRequestAt: number}> {
+    return Array.from(this.hosts.entries()).map(([origin, state]) => ({
+      origin,
+      busy: state.slots.filter((s) => s.busy).length,
+      pending: state.pending.length,
+      lastRequestAt: state.lastRequestAt,
+    }));
+  }
+
   private getHostState(origin: string): HostState {
     if (!this.hosts.has(origin)) {
       const slots: Slot[] = [];

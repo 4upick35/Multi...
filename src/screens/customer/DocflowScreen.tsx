@@ -101,6 +101,8 @@ export default function DocflowScreen({onBack}: Props) {
             {type: 'section', title: `На ознакомление (${informTotal})`, items: informItems},
           ].filter(s => s.items.length > 0)}
           keyExtractor={item => item.title}
+          initialNumToRender={10}
+          windowSize={7}
           renderItem={({item: section}) => (
             <View>
               <Text variant="titleSmall" style={styles.sectionTitle}>{section.title}</Text>

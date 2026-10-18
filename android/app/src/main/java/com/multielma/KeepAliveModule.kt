@@ -17,6 +17,8 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -194,7 +196,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
    * independently of the foreground service. Silently ignores missing permission.
    */
   @ReactMethod
-  fun notify(title: String?, body: String?, sound: Boolean, vibration: Boolean, soundId: String?, volume: Int) {
+  fun notify(title: String?, body: String?, sound: Boolean, vibration: Boolean, soundId: String?, volume: Int, taskId: String?) {
     try {
       val context = reactApplicationContext
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -207,7 +209,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
         return
       }
       ensureChannel(CHANNEL_TASK_ALERTS, CHANNEL_TASK_ALERTS_NAME, NotificationManager.IMPORTANCE_DEFAULT)
-      manager.notify(TASK_ALERT_NOTIFICATION_ID, buildNotification(title, body, CHANNEL_TASK_ALERTS))
+      manager.notify(TASK_ALERT_NOTIFICATION_ID, buildNotification(title, body, CHANNEL_TASK_ALERTS, taskId))
       if (vibration) {
         vibrateAlert()
       }
@@ -243,6 +245,24 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       promise.resolve(powerManager.isIgnoringBatteryOptimizations(reactApplicationContext.packageName))
     } catch (t: Throwable) {
       promise.reject("BATTERY_OPT_CHECK_FAILED", t)
+    }
+  }
+
+  @ReactMethod
+  fun isNetworkAvailable(promise: Promise) {
+    try {
+      val connectivityManager = reactApplicationContext.getSystemService(ConnectivityManager::class.java)
+      val network = connectivityManager?.activeNetwork
+      val capabilities =
+          if (network != null) connectivityManager.getNetworkCapabilities(network) else null
+      val online =
+          capabilities != null &&
+              (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                  capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
+      promise.resolve(online)
+    } catch (t: Throwable) {
+      // Отсутствие доступа к состоянию сети не должно давать ложный «офлайн».
+      promise.resolve(true)
     }
   }
 
@@ -515,7 +535,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun alertNewItem(title: String?, body: String?, sound: Boolean, vibration: Boolean, repeatCount: Int, accountId: String?, soundId: String?, volume: Int) {
+  fun alertNewItem(title: String?, body: String?, sound: Boolean, vibration: Boolean, repeatCount: Int, accountId: String?, soundId: String?, volume: Int, applicationId: String?) {
     try {
       // Останавливаем предыдущий звук/вибрацию перед запуском нового
       stopAlertInternal()
@@ -567,7 +587,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       }
 
       // --- Уведомление на канале application_alerts_v3 ---
-      publishApplicationAlert(title, body, accountId)
+      publishApplicationAlert(title, body, accountId, applicationId)
     } catch (_: Throwable) {
       // Best effort: never crash JS
     }
@@ -580,6 +600,28 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
     } catch (_: Throwable) {
       // Best effort
     }
+  }
+
+  @ReactMethod
+  fun hapticFeedback(kind: String?) {
+    try {
+      val ctx = reactApplicationContext
+      val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val manager = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+        manager.defaultVibrator
+      } else {
+        @Suppress("DEPRECATION")
+        ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+      }
+      if (!vibrator.hasVibrator()) return
+      val effect = when (kind) {
+        "success" -> VibrationEffect.createWaveform(longArrayOf(0, 18, 40, 24), -1)
+        "warning" -> VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE)
+        "error" -> VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1)
+        else -> VibrationEffect.createOneShot(30, 200)
+      }
+      vibrator.vibrate(effect)
+    } catch (_: Throwable) {}
   }
 
   private fun stopAlertInternal() {
@@ -623,7 +665,13 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
     alertReceiverRegistered = false
   }
 
-  private fun publishApplicationAlert(title: String?, body: String?, accountId: String?) {
+  /** requestCode/id уведомления заявки: уникален на учётку, чтобы заявки группировались. */
+  private fun accountNotificationId(accountId: String?): Int {
+    val key = accountId ?: ""
+    return 1000 + Math.abs(key.hashCode() % 1000)
+  }
+
+  private fun publishApplicationAlert(title: String?, body: String?, accountId: String?, applicationId: String?) {
     try {
       val context = reactApplicationContext
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -640,6 +688,8 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
       // Регистрируем receiver для обработки смахивания
       registerAlertReceiver()
 
+      val notificationId = accountNotificationId(accountId)
+
       // deleteIntent — смахивание останавливает звук
       val stopIntent = Intent(ACTION_ALERT_STOP).apply {
         setPackage(context.packageName)
@@ -649,13 +699,15 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
       )
 
-      // contentIntent — тап открывает приложение на экране заявок с фильтром учётки
+      // contentIntent — тап открывает приложение на экране заявок (с карточкой,
+      // если известен applicationId) с фильтром учётки
       val contentIntent = PendingIntent.getActivity(
         context,
-        5,
+        notificationId,
         Intent(context, MainActivity::class.java).apply {
           putExtra("multi_elma_nav", "applications")
           accountId?.takeIf { it.isNotBlank() }?.let { putExtra("multi_elma_account", it) }
+          applicationId?.takeIf { it.isNotBlank() }?.let { putExtra("multi_elma_application", it) }
           flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         },
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -675,10 +727,46 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
         .setContentIntent(contentIntent)
         .setDeleteIntent(deletePendingIntent)
         .setAutoCancel(true)
+        .setGroup(GROUP_APPLICATIONS)
       if (contentText != null) {
         builder.setContentText(contentText)
       }
-      manager.notify(APPLICATION_ALERT_NOTIFICATION_ID, builder.build())
+      manager.notify(notificationId, builder.build())
+      publishApplicationSummary(manager)
+    } catch (_: Throwable) {
+      // Best effort
+    }
+  }
+
+  /**
+   * Сводное уведомление группы заявок (id 999): тихое (канал без звука/вибрации,
+   * собственный звук не играем), тап открывает список заявок.
+   */
+  private fun publishApplicationSummary(manager: NotificationManager) {
+    try {
+      val context = reactApplicationContext
+      val summaryIntent = PendingIntent.getActivity(
+        context,
+        APPLICATION_SUMMARY_NOTIFICATION_ID,
+        Intent(context, MainActivity::class.java).apply {
+          putExtra("multi_elma_nav", "applications")
+          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        },
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+      val builder =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          Notification.Builder(context, CHANNEL_APPLICATION_ALERTS)
+        } else {
+          Notification.Builder(context)
+        }
+      builder
+        .setSmallIcon(R.drawable.ic_stat_notification)
+        .setContentTitle(GROUP_SUMMARY_TITLE)
+        .setContentIntent(summaryIntent)
+        .setAutoCancel(true)
+        .setGroup(GROUP_APPLICATIONS)
+        .setGroupSummary(true)
+      manager.notify(APPLICATION_SUMMARY_NOTIFICATION_ID, builder.build())
     } catch (_: Throwable) {
       // Best effort
     }
@@ -722,7 +810,7 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
   }
 
   @Suppress("DEPRECATION")
-  private fun buildNotification(title: String?, body: String?, channelId: String): Notification {
+  private fun buildNotification(title: String?, body: String?, channelId: String, taskId: String? = null): Notification {
     val contentTitle = title?.takeIf { it.isNotBlank() } ?: DEFAULT_TITLE
     val contentText = body?.takeIf { it.isNotBlank() }
     val contentIntent =
@@ -730,6 +818,10 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
             reactApplicationContext,
             0,
             Intent(reactApplicationContext, MainActivity::class.java).apply {
+              if (taskId != null && taskId.isNotBlank()) {
+                putExtra("multi_elma_nav", "tasks")
+                putExtra("multi_elma_task", taskId)
+              }
               flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -813,6 +905,10 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
   private var pendingNavigation: String? = null
   @Volatile
   private var pendingAccountId: String? = null
+  @Volatile
+  private var pendingApplicationId: String? = null
+  @Volatile
+  private var pendingTaskId: String? = null
 
   @ReactMethod
   fun showOverlayWidget(text: String?) {
@@ -874,14 +970,20 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
   fun consumePendingNavigation(promise: Promise) {
     val target = pendingNavigation
     val accountId = pendingAccountId
+    val applicationId = pendingApplicationId
+    val taskId = pendingTaskId
     pendingNavigation = null
     pendingAccountId = null
+    pendingApplicationId = null
+    pendingTaskId = null
     if (target == null) {
       promise.resolve(null)
     } else {
       val map = Arguments.createMap()
       map.putString("target", target)
       map.putString("accountId", accountId)
+      map.putString("applicationId", applicationId)
+      map.putString("taskId", taskId)
       promise.resolve(map)
     }
   }
@@ -890,14 +992,18 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
    * Called from MainActivity when the app is brought to front via the overlay widget tap.
    * Sends a navigation event to JS and stores it for consumePendingNavigation.
    */
-  fun handleNavigationIntent(target: String, accountId: String?) {
+  fun handleNavigationIntent(target: String, accountId: String?, applicationId: String? = null, taskId: String? = null) {
     pendingNavigation = target
     pendingAccountId = accountId
+    pendingApplicationId = applicationId
+    pendingTaskId = taskId
     stopAlertInternal()
     try {
       val payload = Arguments.createMap()
       payload.putString("target", target)
       payload.putString("accountId", accountId)
+      payload.putString("applicationId", applicationId)
+      payload.putString("taskId", taskId)
       reactApplicationContext
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
         .emit(EVENT_NAVIGATION, payload)
@@ -940,7 +1046,11 @@ class KeepAliveModule(reactContext: ReactApplicationContext) :
     private const val CHANNEL_APPLICATION_ALERTS_NAME = "Application alerts"
     /** Старые id каналов, оставшиеся после бампа — удаляются при создании нового канала. */
     private val LEGACY_CHANNEL_IDS = listOf("task_alerts", "application_alerts_v2")
-    private const val APPLICATION_ALERT_NOTIFICATION_ID = 3
+    /** Группировка уведомлений о новых заявках (на заявку + сводное). */
+    private const val GROUP_APPLICATIONS = "multi_elma_applications"
+    /** Сводное уведомление группы заявок. */
+    private const val APPLICATION_SUMMARY_NOTIFICATION_ID = 999
+    private const val GROUP_SUMMARY_TITLE = "Новые заявки"
     private const val ACTION_ALERT_STOP = "com.multielma.ACTION_ALERT_STOP"
     private const val EVENT_NAVIGATION = "multiElmaNavigate"
     private const val EVENT_SYNC_TICK = "multiElmaSyncTick"

@@ -12,11 +12,14 @@ import {
   FAST_GAP_JITTER_MS,
   PUSH_FALLBACK_DELAY_MS,
   QUEUE_MIN_GAP_MS,
+  MAX_POLL_INTERVAL_SEC,
 } from '../config/constants';
 import {nextAccountIntervalMs} from '../utils/poll-interval';
 import {SYNC_TICK_EVENT, startSyncTicker, stopSyncTicker, delay} from '../native/KeepAlive';
 import {logDiag} from '../diag/accept-log';
 import {getRemainingPauseMs} from '../infrastructure/AccountThrottle';
+import {getTransportQueueStats} from '../infrastructure/api/client';
+import {getPendingActions} from './action-queue';
 
 const REFRESH_ALL_TIMEOUT_MS = 20_000;
 const ACCOUNT_TIMEOUT_MS = 15_000;
@@ -52,6 +55,51 @@ let lastTickAt = 0;
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
 let retryDelayById = new Map<string, number>();
+
+// Адаптивный опрос: при отсутствии изменений интервал учётки удваивается
+// до MAX_POLL_INTERVAL_SEC (см. computeAdaptiveIntervalMs).
+const ADAPTIVE_NO_CHANGE_STEPS = 3;
+let idleSteps = new Map<string, number>();
+let lastSignature = new Map<string, string>();
+
+/**
+ * Адаптивный интервал опроса: baseMs × 2^idle, но не больше MAX_POLL_INTERVAL_SEC.
+ * Чистая функция — для тестов.
+ */
+export function computeAdaptiveIntervalMs(baseMs: number, idle: number): number {
+  return Math.min(baseMs * Math.pow(2, Math.max(0, idle)), MAX_POLL_INTERVAL_SEC * 1000);
+}
+
+/** Стабильная сигнатура списка заявок учётки: id, статус, updatedAt, createdAt. */
+function applicationsSignature(accId: string): string {
+  const items = useCustomerServiceStore.getState().getItems(accId, 'applications');
+  return items
+    .map(item => {
+      const raw = item.raw ?? {};
+      const status = ((raw.__status as Record<string, unknown> | undefined)?.status) ?? '';
+      const updatedAt = raw.__updatedAt ?? '';
+      const createdAt = raw.__createdAt ?? '';
+      return `${item.id}:${status}:${updatedAt}:${createdAt}`;
+    })
+    .join('|');
+}
+
+/**
+ * Сброс адаптивного опроса (idle-счётчик и последняя сигнатура) для указанных
+ * учёток или для всех — вызывается при смене foreground/приоритетных учёток,
+ * при принудительном обновлении и при остановке синхронизации.
+ */
+export function resetAdaptivePolling(accountIds?: string[]): void {
+  if (!accountIds) {
+    idleSteps.clear();
+    lastSignature.clear();
+    return;
+  }
+  for (const id of accountIds) {
+    idleSteps.delete(id);
+    lastSignature.delete(id);
+  }
+}
 
 // Монотонно растущий «поколенческий» номер запроса по учётке. Позволяет
 // проверить, что завершившийся запрос всё ещё актуален (не «призрак» от
@@ -173,7 +221,10 @@ function intervalForAccount(accId: string): number {
   if (isForegroundBoost(accId)) {
     return nextAccountIntervalMs(FAST_POLL_INTERVAL_SEC * 1000, FAST_GAP_JITTER_MS);
   }
-  return currentIntervalMs();
+  const baseMs = useSettingsStore.getState().pollIntervalSec * 1000;
+  const effective = computeAdaptiveIntervalMs(baseMs, idleSteps.get(accId) ?? 0);
+  const jitter = Math.round(effective * 0.2);
+  return effective + Math.round((Math.random() * 2 - 1) * jitter);
 }
 
 /**
@@ -199,6 +250,7 @@ function bumpDueAt(ids: readonly string[]): void {
  * чтобы ближайший тик сразу обновил её.
  */
 export function setForegroundAccounts(accountIds: string[]): void {
+  resetAdaptivePolling(accountIds);
   if (accountIds.length === 0) {
     foregroundAccounts.clear();
     logDiag('applications-sync', 'foreground-accounts cleared');
@@ -221,6 +273,7 @@ export function setForegroundAccounts(accountIds: string[]): void {
  * отсутствует), чтобы ближайший тик обновил её сразу.
  */
 export function applyPriorityAccounts(accountIds: string[]): void {
+  resetAdaptivePolling(accountIds);
   bumpDueAt(accountIds);
   logDiag('applications-sync', 'priority-accounts count=' + accountIds.length);
 }
@@ -278,6 +331,16 @@ async function refreshOneAccount(acc: ElmaAccount, gen = nextRequestGen(acc.id))
     logDiag('applications-sync', `refresh-ok account=${acc.id} items=${n} ts=${now}`);
     retryDelayById.delete(acc.id);
     lastAttemptOk.set(acc.id, true);
+    const sig = applicationsSignature(acc.id);
+    if (sig === lastSignature.get(acc.id)) {
+      idleSteps.set(
+        acc.id,
+        Math.min(ADAPTIVE_NO_CHANGE_STEPS, (idleSteps.get(acc.id) ?? 0) + 1),
+      );
+    } else {
+      idleSteps.set(acc.id, 0);
+    }
+    lastSignature.set(acc.id, sig);
     dueAt.set(acc.id, Date.now() + intervalForAccount(acc.id));
     return true;
   } catch {
@@ -513,6 +576,7 @@ export function stopApplicationsSync(): void {
   cancelledRef = true;
   running = false;
   retryDelayById = new Map();
+  resetAdaptivePolling();
   foregroundAccounts.clear();
   lastAttemptOk.clear();
   if (tickSubscription) {
@@ -536,6 +600,9 @@ export function stopApplicationsSync(): void {
 export async function refreshApplicationsNow(priorityAccountId?: string): Promise<void> {
   if (priorityAccountId) {
     pendingPriorityAccountId = priorityAccountId;
+    resetAdaptivePolling([priorityAccountId]);
+  } else {
+    resetAdaptivePolling();
   }
   if (refreshAllNowRunning) {
     return;
@@ -615,4 +682,29 @@ export function getLastTickAt(): number {
 
 export function getRefreshAllStartedAt(): number {
   return refreshAllStartedAt;
+}
+
+export async function getSyncDiagnostics(): Promise<{
+  running: boolean;
+  lastTickAt: number;
+  refreshAllStartedAt: number;
+  accounts: number;
+  idleSteps: Record<string, number>;
+  pendingActions: number;
+  queue: ReturnType<typeof getTransportQueueStats>;
+}> {
+  const pending = await getPendingActions();
+  const idle: Record<string, number> = {};
+  idleSteps.forEach((value, key) => {
+    idle[key] = value;
+  });
+  return {
+    running: isApplicationsSyncRunning(),
+    lastTickAt: getLastTickAt(),
+    refreshAllStartedAt: getRefreshAllStartedAt(),
+    accounts: accountsRef.length,
+    idleSteps: idle,
+    pendingActions: pending.length,
+    queue: getTransportQueueStats(),
+  };
 }

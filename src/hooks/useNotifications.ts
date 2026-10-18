@@ -5,6 +5,7 @@ import * as KeepAliveNative from '../native/KeepAlive';
 import * as TasksStore from '../store/tasks-store';
 import * as AuthStore from '../store/auth-store';
 import * as SettingsStore from '../store/settings-store';
+import {isQuietHours} from '../utils/quiet-hours';
 
 // ---------------------------------------------------------------------------
 // detectNewTasks — pure helper
@@ -30,19 +31,25 @@ function sendNotification(
   if (!settings.notificationsEnabled || !settings.notifyNewTasks) {
     return;
   }
+  if (settings.notificationDisabledAccountIds.includes(task.accountId)) {
+    return;
+  }
+  const quiet =
+    settings.quietHoursEnabled &&
+    isQuietHours(new Date(), settings.quietHoursFrom, settings.quietHoursTo);
   const title = `Новая задача: ${task.subject || task.name}`;
   const body = `${accountName}`;
   try {
     const keepAlive = KeepAliveNative as {
-      notifyTask?: (t: string, b: string, o?: {sound?: boolean; vibration?: boolean; soundId?: string; volume?: number}) => void;
+      notifyTask?: (t: string, b: string, o?: {sound?: boolean; vibration?: boolean; soundId?: string; volume?: number}, taskId?: string | null) => void;
     };
     if (typeof keepAlive.notifyTask === 'function') {
       keepAlive.notifyTask(title, body, {
-        sound: settings.soundEnabled,
-        vibration: settings.vibrationEnabled,
+        sound: settings.soundEnabled && !quiet,
+        vibration: settings.vibrationEnabled && !quiet,
         soundId: settings.otherSoundId,
         volume: settings.otherVolume,
-      });
+      }, task.id);
       return;
     }
   } catch {

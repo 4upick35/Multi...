@@ -111,3 +111,7 @@ export async function insertApplicationById(
 ): Promise<boolean> {
   return customerService.insertApplicationById(account, id);
 }
+
+export function markApplicationAccepted(accountId: string, applicationId: string): void {
+  customerService.markApplicationAccepted(accountId, applicationId);
+}

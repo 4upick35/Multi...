@@ -250,6 +250,8 @@ export default function CustomerServiceScreen({onSelectCollection, onFeed, onWor
         data={accessibleCollections}
         keyExtractor={(item) => item.key}
         renderItem={renderSection}
+        initialNumToRender={6}
+        windowSize={5}
         style={styles.flatList}
         contentContainerStyle={styles.list}
         refreshControl={

@@ -63,6 +63,26 @@ export class AccountRegistry {
   }
 
   /**
+   * Изменить порядок аккаунтов. Неизвестные id игнорируются,
+   * не перечисленные аккаунты остаются в конце в прежнем порядке.
+   */
+  reorder(orderedIds: string[]): void {
+    const next = new Map<string, ElmaAccount>();
+    for (const id of orderedIds) {
+      const account = this.accounts.get(id);
+      if (account) {
+        next.set(id, account);
+      }
+    }
+    for (const [id, account] of this.accounts) {
+      if (!next.has(id)) {
+        next.set(id, account);
+      }
+    }
+    this.accounts = next;
+  }
+
+  /**
    * Получить все аккаунты (копия массива).
    */
   getAll(): ElmaAccount[] {

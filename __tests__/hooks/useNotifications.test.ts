@@ -17,6 +17,10 @@ const mockSettings = {
   vibrationEnabled: true,
   otherSoundId: 'other-sound',
   otherVolume: 7,
+  quietHoursEnabled: false,
+  quietHoursFrom: '22:00',
+  quietHoursTo: '07:00',
+  notificationDisabledAccountIds: [] as string[],
 };
 const mockTaskListeners = new Set<() => void>();
 
@@ -117,6 +121,10 @@ beforeEach(async () => {
   mockSettings.vibrationEnabled = true;
   mockSettings.otherSoundId = 'other-sound';
   mockSettings.otherVolume = 7;
+  mockSettings.quietHoursEnabled = false;
+  mockSettings.quietHoursFrom = '22:00';
+  mockSettings.quietHoursTo = '07:00';
+  mockSettings.notificationDisabledAccountIds = [];
 });
 
 describe('useNotifications: мастер-переключатели и опции звука', () => {
@@ -137,6 +145,7 @@ describe('useNotifications: мастер-переключатели и опци�
         soundId: 'other-sound',
         volume: 7,
       },
+      '2',
     );
   });
 

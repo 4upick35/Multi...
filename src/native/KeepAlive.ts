@@ -14,6 +14,8 @@ export interface AlertOptions {
   soundId?: string;
   /** Громкость 0..10. */
   volume?: number;
+  /** Идентификатор заявки для глубокой навигации при тапе на уведомление. */
+  applicationId?: string;
 }
 
 function normalizeVolume(volume: number | undefined): number {
@@ -26,14 +28,16 @@ function normalizeVolume(volume: number | undefined): number {
  */
 interface KeepAliveNativeModule {
   setKeepScreenOn(enabled: boolean): void;
+  hapticFeedback?(kind: string): void;
   setSecureFlag(enabled: boolean): Promise<boolean>;
   startBackgroundSync(title: string | null, body: string | null): Promise<void>;
   stopBackgroundSync(): Promise<void>;
   isBackgroundSyncRunning(): Promise<boolean>;
-  notify(title: string | null, body: string | null, sound: boolean, vibration: boolean, soundId: string | null, volume: number): void;
+  notify(title: string | null, body: string | null, sound: boolean, vibration: boolean, soundId: string | null, volume: number, taskId: string | null): void;
   requestBatteryOptimizationSettings(): void;
   isIgnoringBatteryOptimizations(): Promise<boolean>;
-  alertNewItem(title: string | null, body: string | null, sound: boolean, vibration: boolean, repeatCount: number, accountId: string | null, soundId: string | null, volume: number): void;
+  isNetworkAvailable(): Promise<boolean>;
+  alertNewItem(title: string | null, body: string | null, sound: boolean, vibration: boolean, repeatCount: number, accountId: string | null, soundId: string | null, volume: number, applicationId: string | null): void;
   previewAlertSound(soundId: string | null, volume: number): void;
   stopAlert(): void;
   showOverlayWidget(text: string | null): void;
@@ -59,7 +63,12 @@ interface KeepAliveNativeModule {
 const isKeepAliveModule = (value: unknown): value is KeepAliveNativeModule =>
   typeof value === 'object' && value !== null;
 
-export interface NavigationTarget {target: string; accountId: string | null;}
+export interface NavigationTarget {
+  target: string;
+  accountId: string | null;
+  applicationId?: string | null;
+  taskId?: string | null;
+}
 
 const rawModule: unknown = Platform.OS === 'android' ? NativeModules.KeepAlive : null;
 
@@ -143,12 +152,12 @@ export function isBackgroundSyncRunning(): Promise<boolean> {
  * Показывает локальное уведомление о новой задаче (канал "task_alerts_v2"),
  * независимо от фонового сервиса. Звук/громкость выбираются по настройкам.
  */
-export function notifyTask(title: string, body: string, options?: AlertOptions): void {
+export function notifyTask(title: string, body: string, options?: AlertOptions, taskId?: string | null): void {
   const sound = options?.sound !== false;
   const vibration = options?.vibration !== false;
   const soundId = options?.soundId || DEFAULT_OTHER_SOUND;
   whenAvailable(nativeModule =>
-    nativeModule.notify(title, body, sound, vibration, soundId, normalizeVolume(options?.volume)),
+    nativeModule.notify(title, body, sound, vibration, soundId, normalizeVolume(options?.volume), taskId ?? null),
   );
 }
 
@@ -163,6 +172,11 @@ export function isIgnoringBatteryOptimizations(): Promise<boolean> {
     nativeModule => nativeModule.isIgnoringBatteryOptimizations(),
     false,
   );
+}
+
+/** true, если есть сеть с доступом в интернет; вне Android или при ошибке — true. */
+export function isNetworkAvailable(): Promise<boolean> {
+  return whenAvailableAsync(nativeModule => nativeModule.isNetworkAvailable(), true);
 }
 
 /**
@@ -189,6 +203,7 @@ export function alertNewItem(
       accountId ?? null,
       soundId,
       normalizeVolume(options?.volume),
+      options?.applicationId ?? null,
     ),
   );
 }
@@ -204,6 +219,15 @@ export function previewAlertSound(soundId: string, volume: number): void {
 export function stopAlert(): void {
   whenAvailable(nativeModule => nativeModule.stopAlert());
 }
+
+export type HapticKind = 'light' | 'success' | 'warning' | 'error';
+
+export function hapticFeedback(kind: HapticKind = 'light'): void {
+  if (keepAlive?.hapticFeedback) {
+    keepAlive.hapticFeedback(kind);
+  }
+}
+
 
 // --- Планировщик синхронизации (нативные тики) ---
 

@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState, useMemo} from 'react';
-import {View, StyleSheet, FlatList, RefreshControl} from 'react-native';
+import {View, StyleSheet, FlatList, RefreshControl, Platform} from 'react-native';
 import {Text, Button} from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BackButton from '../../components/BackButton';
@@ -264,6 +264,10 @@ export default function FeedScreen({onBack}: Props) {
           data={messagesList}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android'}
           style={styles.flatList}
           contentContainerStyle={styles.list}
           refreshControl={

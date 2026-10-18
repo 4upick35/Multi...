@@ -1,4 +1,4 @@
-import React, {useState, useRef, useMemo} from 'react';
+import React, {useState, useRef, useMemo, useEffect} from 'react';
 import {View, StyleSheet, ScrollView, Alert} from 'react-native';
 import {Text, Button, Chip, Divider} from 'react-native-paper';
 import BackButton from '../../components/BackButton';
@@ -8,14 +8,17 @@ import {useAuthStore} from '../../store/auth-store';
 import {submitTask, fetchTaskExitsNormalized, fetchTaskTemplateExits, fetchTaskById, EXIT_CONFIRM_VISIT, isVisitExit} from '../../services/elma-api';
 import type {TaskExit, TaskExitField} from '../../services/elma-api';
 import type {ElmaTask} from '../../types/task';
-import type {ElmaAccount} from '../../types/account';
 import {stripHtml} from '../../utils/strip-html';
 import {isUuid} from '../../utils/uuid';
 import {taskNodeIdFromPath, isExecutionScreenSupported, isTaskClosed} from '../../domain/TaskService';
 import {logDiag} from '../../diag/accept-log';
-import {getStatusLabel, getStatusColor, getPriorityLabel} from '../../services/task-service';
+import {getStatusLabel, getStatusColor, getPriorityLabel, taskFromRaw} from '../../services/task-service';
 import {useSecureScreen} from '../../hooks/useSecureScreen';
 import {getRemainingPauseMs} from '../../infrastructure/AccountThrottle';
+import {enqueuePendingAction, processPendingActions, removePendingAction} from '../../services/action-queue';
+import {usePendingActionsFor} from '../../hooks/usePendingActionsFor';
+import {isNetworkErrorText} from '../../utils/error-text';
+import {hapticFeedback} from '../../native/KeepAlive';
 import {useAppTheme} from '../../theme';
 import {SUBMIT_MIN_GAP_MS} from '../../config/constants';
 import QuantumLoader from '../../components/QuantumLoader';
@@ -30,19 +33,39 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
   );
   const accountFromStore = useAuthStore(s => s.accounts.find(a => a.id === accountId));
 
-  const taskRef = useRef<ElmaTask | null>(null);
-  const accountRef = useRef<ElmaAccount | null>(null);
-  const initializedRef = useRef(false);
+  const account = accountFromStore ?? null;
+  const [fetchedTask, setFetchedTask] = useState<ElmaTask | null>(null);
+  const [fetchDone, setFetchDone] = useState(false);
+  const loadAttemptedRef = useRef(false);
   const exitsRequestRef = useRef(false);
 
-  if (!initializedRef.current) {
-    taskRef.current = taskFromStore ?? null;
-    accountRef.current = accountFromStore ?? null;
-    initializedRef.current = true;
-  }
+  // Открытие из уведомления: задача может ещё не быть в сторе — догружаем её.
+  useEffect(() => {
+    if (taskFromStore || fetchedTask || !accountFromStore || loadAttemptedRef.current) {
+      setFetchDone(true);
+      return;
+    }
+    loadAttemptedRef.current = true;
+    let mounted = true;
+    fetchTaskById(accountFromStore, taskId)
+      .then(result => {
+        if (mounted && result.task) {
+          setFetchedTask(taskFromRaw(result.task, accountFromStore));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) {
+          setFetchDone(true);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [taskFromStore, fetchedTask, accountFromStore, taskId]);
 
-  const task = taskRef.current;
-  const account = accountRef.current;
+  const task = taskFromStore ?? fetchedTask ?? null;
+  const pendingExit = usePendingActionsFor(accountId, taskId, 'submit-exit');
   const {colors} = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [loading, setLoading] = useState(false);
@@ -249,8 +272,26 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
     try {
       const result = await submitTask(account, task.instanceId, task.taskId || taskId, knownExit.id);
       if (result.ok) {
+        hapticFeedback('success');
         Alert.alert('Успех', 'Действие выполнено');
         onBack();
+      } else if (isNetworkErrorText(result.error)) {
+        // Сеть недоступна: откладываем и повторим автоматически, когда связь
+        // вернётся. Выходы не прячем и обычную ошибку не показываем.
+        await enqueuePendingAction({
+          kind: 'submit-exit',
+          accountId,
+          entityId: task.taskId || taskId,
+          payload: {
+            taskUuid: task.taskId || taskId,
+            instanceId: task.instanceId,
+            exitId: knownExit.id,
+          },
+        });
+        Alert.alert(
+          'Отложено',
+          'Сеть недоступна. Действие будет отправлено автоматически при восстановлении связи.',
+        );
       } else {
         // Сбрасываем список выходов: после отказа состояние задачи на сервере
         // могло измениться, и «дожимать» остальные кнопки вслепую нельзя.
@@ -258,6 +299,7 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
         setExitsLoaded(false);
         setExitsFieldsReady(false);
         logDiag('exits', 'submit-failed id=' + knownExit.id + ' err=' + String(result.error || ''));
+        hapticFeedback('error');
         Alert.alert('Ошибка', result.error || 'Не удалось выполнить действие');
       }
     } finally {
@@ -297,8 +339,27 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
       const result = await submitTask(account, task.instanceId, task.taskId || taskId, exit.id, values);
       setExitForm(null);
       if (result.ok) {
+        hapticFeedback('success');
         Alert.alert('Успех', 'Действие выполнено');
         onBack();
+      } else if (isNetworkErrorText(result.error)) {
+        // Сеть недоступна: откладываем с заполненными значениями полей и
+        // повторим автоматически, когда связь вернётся.
+        await enqueuePendingAction({
+          kind: 'submit-exit',
+          accountId,
+          entityId: task.taskId || taskId,
+          payload: {
+            taskUuid: task.taskId || taskId,
+            instanceId: task.instanceId,
+            exitId: exit.id,
+            values,
+          },
+        });
+        Alert.alert(
+          'Отложено',
+          'Сеть недоступна. Действие будет отправлено автоматически при восстановлении связи.',
+        );
       } else {
         // Сбрасываем список выходов: после отказа состояние задачи на сервере
         // могло измениться, и «дожимать» остальные кнопки вслепую нельзя.
@@ -306,6 +367,7 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
         setExitsLoaded(false);
         setExitsFieldsReady(false);
         logDiag('exits', 'submit-failed id=' + exit.id + ' err=' + String(result.error || ''));
+        hapticFeedback('error');
         Alert.alert('Ошибка', result.error || 'Не удалось выполнить действие');
       }
     } finally {
@@ -314,6 +376,14 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
   };
 
   if (!task || !account) {
+    if (!fetchDone) {
+      return (
+        <View style={styles.center}>
+          <QuantumLoader />
+          <BackButton onBack={onBack} />
+        </View>
+      );
+    }
     return (
       <View style={styles.center}>
         <Text>Задача не найдена</Text>
@@ -338,6 +408,25 @@ export default function TaskDetailScreen({taskId, accountId, onBack, onExecution
       </View>
 
       <Text variant="headlineSmall" style={styles.subject}>{task.subject}</Text>
+
+      {pendingExit.length > 0 ? (
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingText}>
+            Выход из задачи отложен и отправится автоматически при появлении сети.
+          </Text>
+          <View style={styles.pendingRow}>
+            <Button compact mode="text" onPress={() => processPendingActions().catch(() => {})}>
+              Повторить
+            </Button>
+            <Button
+              compact
+              mode="text"
+              onPress={() => removePendingAction(pendingExit[0].id).catch(() => {})}>
+              Отменить
+            </Button>
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.meta}>
         <Text style={styles.label}>Статус:</Text>
@@ -469,6 +558,15 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
   accountChip: {},
   overdueChip: {backgroundColor: c.error},
   subject: {fontWeight: 'bold', marginBottom: 16},
+  pendingCard: {
+    backgroundColor: c.warning + '18',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  pendingText: {fontSize: 13, color: c.textPrimary},
+  pendingRow: {flexDirection: 'row', justifyContent: 'flex-end', gap: 4},
   meta: {flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8},
   label: {fontWeight: '600', minWidth: 80},
   overdue: {color: c.error, fontWeight: 'bold'},

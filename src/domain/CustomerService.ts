@@ -254,6 +254,29 @@ export class CustomerService {
     }
   }
 
+  markApplicationAccepted(accountId: string, applicationId: string): void {
+    const items = this.csPersistence.getItems(accountId, 'applications');
+    if (items.length === 0) {
+      return;
+    }
+    let changed = false;
+    const next = items.map(item => {
+      if (item.id !== applicationId) {
+        return item;
+      }
+      changed = true;
+      const raw = {
+        ...item.raw,
+        show_button_get_application: false,
+        __status: {status: 2, name: 'Принято'},
+      };
+      return {...item, status: 'Принято', raw};
+    });
+    if (changed) {
+      this.csPersistence.setItems(accountId, 'applications', next);
+    }
+  }
+
   /**
    * Загрузить следующую страницу коллекции (пагинация).
    */

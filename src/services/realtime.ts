@@ -14,6 +14,7 @@ import type {ElmaAccount} from '../types/account';
 import {logDiag} from '../diag/accept-log';
 import {maskValue} from '../utils/mask';
 import {errorText} from '../utils/error-text';
+import {isQuietHours} from '../utils/quiet-hours';
 import {SYNC_TICK_EVENT} from '../native/KeepAlive';
 import type {AlertOptions} from '../native/KeepAlive';
 import * as SettingsStore from '../store/settings-store';
@@ -477,6 +478,10 @@ interface NotificationSettings {
   otherSoundId: string;
   otherVolume: number;
   floatingWidgetEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursFrom: string;
+  quietHoursTo: string;
+  notificationDisabledAccountIds: string[];
 }
 
 /**
@@ -497,6 +502,10 @@ const FALLBACK_NOTIFICATION_SETTINGS: NotificationSettings = {
   otherSoundId: DEFAULT_OTHER_SOUND,
   otherVolume: DEFAULT_ALERT_VOLUME,
   floatingWidgetEnabled: false,
+  quietHoursEnabled: false,
+  quietHoursFrom: '22:00',
+  quietHoursTo: '07:00',
+  notificationDisabledAccountIds: [],
 };
 
 /** Префикс namespace цели заявки в portal-уведомлениях customer_service. */
@@ -680,10 +689,41 @@ function readNotificationSettings(): NotificationSettings {
           ? state.otherVolume
           : DEFAULT_ALERT_VOLUME,
       floatingWidgetEnabled: state.floatingWidgetEnabled === true,
+      quietHoursEnabled: state.quietHoursEnabled === true,
+      quietHoursFrom:
+        typeof state.quietHoursFrom === 'string' && state.quietHoursFrom !== ''
+          ? state.quietHoursFrom
+          : FALLBACK_NOTIFICATION_SETTINGS.quietHoursFrom,
+      quietHoursTo:
+        typeof state.quietHoursTo === 'string' && state.quietHoursTo !== ''
+          ? state.quietHoursTo
+          : FALLBACK_NOTIFICATION_SETTINGS.quietHoursTo,
+      notificationDisabledAccountIds: normalizeDisabledAccountIds(
+        state.notificationDisabledAccountIds,
+      ),
     };
   } catch {
     return {...FALLBACK_NOTIFICATION_SETTINGS};
   }
+}
+
+/** Отключённые учётки: только непустые строки, без дублей (иначе []). */
+function normalizeDisabledAccountIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const id = item.trim();
+    if (id === '' || result.includes(id)) {
+      continue;
+    }
+    result.push(id);
+  }
+  return result;
 }
 
 /**
@@ -780,6 +820,13 @@ function sendLocalNotification(
     logDiag(TAG, `notify-skip reason=disabled account=${maskValue(accountId)}`);
     return;
   }
+  if (settings.notificationDisabledAccountIds.includes(accountId)) {
+    logDiag(TAG, `notify-skip reason=account-muted account=${maskValue(accountId)}`);
+    return;
+  }
+  const quiet =
+    settings.quietHoursEnabled &&
+    isQuietHours(new Date(), settings.quietHoursFrom, settings.quietHoursTo);
 
   // Две группы уведомлений: новая заявка и всё остальное — свой звук и громкость.
   const isApplicationGroup = kind === 'application-new';
@@ -807,8 +854,8 @@ function sendLocalNotification(
         title,
         text,
         {
-          sound: settings.soundEnabled,
-          vibration: settings.vibrationEnabled,
+          sound: settings.soundEnabled && !quiet,
+          vibration: settings.vibrationEnabled && !quiet,
           repeatCount: settings.alertRepeatCount,
           soundId,
           volume,
@@ -824,8 +871,8 @@ function sendLocalNotification(
     try {
       if (typeof keepAlive.notifyTask === 'function') {
         keepAlive.notifyTask(title, text, {
-          sound: settings.soundEnabled,
-          vibration: settings.vibrationEnabled,
+          sound: settings.soundEnabled && !quiet,
+          vibration: settings.vibrationEnabled && !quiet,
           soundId,
           volume,
         });

@@ -27,6 +27,22 @@ export class TransportThrottleError extends Error {
 
 const REQUEST_TIMEOUT_MS = 15000;
 
+/** Рекурсивная сериализация со стабильной сортировкой ключей (для ключей дедупликации GET). */
+function stableStringify(value: unknown): string {
+  if (value === undefined) {
+    return '';
+  }
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return '[' + value.map(item => stableStringify(item)).join(',') + ']';
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+}
+
 /** Таймаут для тяжёлых ответов (шаблон процесса ~455 КБ). */
 export const LARGE_RESPONSE_TIMEOUT_MS = 30_000;
 
@@ -46,9 +62,22 @@ export interface TransportResponse {
 export class HttpTransport {
   private instances = new Map<string, AxiosInstance>();
   private queue = new RequestQueue();
+  private inflightGets = new Map<string, Promise<TransportResponse>>();
 
   extractCookiesFromResponse(resp: AxiosResponse): string {
     return parseSetCookie(resp.headers?.['set-cookie']);
+  }
+
+  getQueueStats(): {
+    hosts: Array<{origin: string; busy: number; pending: number; lastRequestAt: number}>;
+    inflightGets: number;
+    instances: number;
+  } {
+    return {
+      hosts: this.queue.getStats(),
+      inflightGets: this.inflightGets.size,
+      instances: this.instances.size,
+    };
   }
 
   async request(
@@ -60,6 +89,7 @@ export class HttpTransport {
     headers?: Record<string, string>,
     skipThrottle?: boolean,
     timeoutMs?: number,
+    dedupe: boolean = true,
   ): Promise<TransportResponse> {
     if (!isSecureBaseUrl(account.baseUrl) && !__DEV__) {
       throw new Error('Небезопасный адрес сервера: требуется https');
@@ -70,6 +100,39 @@ export class HttpTransport {
       throw new TransportThrottleError(429);
     }
 
+    if (method === 'get' && dedupe) {
+      const key =
+        account.id + '|' + (account.token || '') + '|' + url + '|' +
+        stableStringify(params) + '|' + stableStringify(headers);
+      const existing = this.inflightGets.get(key);
+      if (existing) {
+        return existing;
+      }
+      const promise = this.enqueueRequest(account, method, url, data, params, headers, skipThrottle, timeoutMs, origin);
+      this.inflightGets.set(key, promise);
+      const cleanup = () => {
+        if (this.inflightGets.get(key) === promise) {
+          this.inflightGets.delete(key);
+        }
+      };
+      promise.then(cleanup, cleanup);
+      return promise;
+    }
+
+    return this.enqueueRequest(account, method, url, data, params, headers, skipThrottle, timeoutMs, origin);
+  }
+
+  private enqueueRequest(
+    account: ElmaAccount,
+    method: 'get' | 'post' | 'put' | 'delete',
+    url: string,
+    data: unknown,
+    params: unknown,
+    headers: Record<string, string> | undefined,
+    skipThrottle: boolean | undefined,
+    timeoutMs: number | undefined,
+    origin: string,
+  ): Promise<TransportResponse> {
     return this.queue.enqueue(origin, async () => {
       const client = this.getClient(account);
 

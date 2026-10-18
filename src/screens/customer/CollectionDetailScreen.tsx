@@ -17,6 +17,9 @@ import type {PicassoSignStatus} from '../../services/elma-api';
 import {loadCollection} from '../../services/customer-service';
 import {getExtraFields, buildAddress, displayFieldValue} from '../../utils/collection-fields';
 import {buildApplicationMessage} from '../../utils/application-message';
+import ApplicationTimeline from '../../components/ApplicationTimeline';
+import {usePendingActionsFor} from '../../hooks/usePendingActionsFor';
+import {processPendingActions, removePendingAction} from '../../services/action-queue';
 import {getFieldCollectionMap, resolveRefNames} from '../../services/app-metadata';
 import {parsePhoneDisplay, parsePhoneTel, parseApplicantName} from '../../utils/card-fields';
 import {copyToClipboard} from '../../native/KeepAlive';
@@ -89,6 +92,12 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
 
   const tasksByAccount = useTasksStore(s => s.tasksByAccount);
 
+  const [acceptedLocally, setAcceptedLocally] = useState(false);
+
+  useEffect(() => {
+    setAcceptedLocally(false);
+  }, [item.id]);
+
   const linkedTask = useMemo(() => {
     for (const [accId, list] of Object.entries(tasksByAccount)) {
       for (const t of list) {
@@ -149,7 +158,7 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
   const extraFields = getExtraFields(item.raw, resolvedRefs, collection.key);
 
   const isApplications = collection.key === 'applications';
-  const showAcceptBtn = isApplications && currentAccount != null && canAccept(item.raw);
+  const showAcceptBtn = isApplications && currentAccount != null && !acceptedLocally && canAccept(item.raw);
   // Визит уже назначен — даём изменить дату/мастера, даже если портал
   // не выставляет флаг show_set_date_of_visit (он говорит лишь о первичном назначении).
   const visitScheduled = String(item.raw.datetime_of_session ?? '').trim() !== '';
@@ -158,8 +167,15 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
     currentAccount != null &&
     (item.raw.show_set_date_of_visit === true || visitScheduled);
 
+  const pendingForItem = usePendingActionsFor(
+    currentAccount?.id ?? null,
+    item.id,
+    ['accept-application', 'schedule-visit'],
+  );
+
   const acceptFlow = useAcceptApplication(
     useCallback((acc: ElmaAccount) => {
+      setAcceptedLocally(true);
       loadCollection(acc, collection.key);
     }, [collection.key]),
   );
@@ -273,10 +289,35 @@ export default function CollectionDetailScreen({item, collection, onBack, onOpen
         {item.name || '(без названия)'}
       </Text>
 
-      {item.status ? (
+      {(acceptedLocally ? 'Принято' : item.status) ? (
         <View style={styles.fieldRow}>
           <Text style={styles.label}>Статус:</Text>
-          <Chip compact style={item.statusColor ? {backgroundColor: item.statusColor + '20'} : undefined} textStyle={item.statusColor ? {color: item.statusColor} : undefined}>{item.status}</Chip>
+          <Chip compact style={item.statusColor ? {backgroundColor: item.statusColor + '20'} : undefined} textStyle={item.statusColor ? {color: item.statusColor} : undefined}>{acceptedLocally ? 'Принято' : item.status}</Chip>
+        </View>
+      ) : null}
+
+      {isApplications ? <ApplicationTimeline raw={item.raw} /> : null}
+
+      {pendingForItem.length > 0 ? (
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingText}>
+            {pendingForItem.some(action => action.kind === 'accept-application')
+              ? 'Принятие заявки отложено и отправится автоматически при появлении сети.'
+              : 'Назначение визита отложено и отправится автоматически при появлении сети.'}
+          </Text>
+          <View style={styles.pendingRow}>
+            <Button compact mode="text" onPress={() => processPendingActions().catch(() => {})}>
+              Повторить
+            </Button>
+            <Button
+              compact
+              mode="text"
+              onPress={() =>
+                pendingForItem.forEach(action => removePendingAction(action.id).catch(() => {}))
+              }>
+              Отменить
+            </Button>
+          </View>
         </View>
       ) : null}
 
@@ -556,6 +597,15 @@ const createStyles = (c: ThemeColors) => StyleSheet.create({
     marginBottom: 8,
   },
   label: {fontWeight: '600', minWidth: 90, color: c.textSubtle},
+  pendingCard: {
+    backgroundColor: c.warning + '18',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  pendingText: {fontSize: 13, color: c.textPrimary},
+  pendingRow: {flexDirection: 'row', justifyContent: 'flex-end', gap: 4},
   fieldValue: {flex: 1, color: c.textSubtle},
   linkText: {color: c.primary, textDecorationLine: 'underline'},
   divider: {marginVertical: 16},

@@ -95,12 +95,13 @@ export async function makeRequest(
   params?: unknown,
   headers?: Record<string, string>,
   timeoutMs?: number,
+  dedupe: boolean = true,
 ): Promise<{data: unknown; updatedAccount?: Partial<ElmaAccount>}> {
   let currentAccount = {...account};
   const skipThrottle = isAuthUrl(url);
 
   try {
-    const result = await transport.request(currentAccount, method, url, data, params, headers, skipThrottle, timeoutMs);
+    const result = await transport.request(currentAccount, method, url, data, params, headers, skipThrottle, timeoutMs, dedupe);
     return {data: result.data, updatedAccount: result.updatedAccount};
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'status' in err && err.constructor && err.constructor.name === 'TransportThrottleError') {
@@ -135,6 +136,7 @@ export async function makeRequest(
             headers,
             skipThrottle,
             timeoutMs,
+            dedupe,
           );
           const updated: Partial<ElmaAccount> = {};
           if (currentAccount.token) {
@@ -210,4 +212,8 @@ export async function makeRequest(
       status,
     );
   }
+}
+
+export function getTransportQueueStats(): ReturnType<HttpTransport['getQueueStats']> {
+  return transport.getQueueStats();
 }

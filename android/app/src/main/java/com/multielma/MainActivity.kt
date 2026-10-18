@@ -16,7 +16,9 @@ class MainActivity : ReactActivity() {
   private var navAttempt = 0
   private var navTarget: String? = null
   private var navAccountId: String? = null
-  private val allowedNavTargets = setOf("applications")
+  private var navApplicationId: String? = null
+  private var navTaskId: String? = null
+  private val allowedNavTargets = setOf("applications", "tasks")
 
   /**
    * Передаёт переход в нативный модуль. На холодном старте модуль создаётся вместе с
@@ -34,10 +36,14 @@ class MainActivity : ReactActivity() {
       navAttempt = 0
       val target = navTarget
       val accountId = navAccountId
+      val applicationId = navApplicationId
+      val taskId = navTaskId
       navTarget = null
       navAccountId = null
+      navApplicationId = null
+      navTaskId = null
       if (target != null) {
-        module.handleNavigationIntent(target, accountId)
+        module.handleNavigationIntent(target, accountId, applicationId, taskId)
       }
     }
   }
@@ -80,17 +86,26 @@ class MainActivity : ReactActivity() {
     handleNavIntent(intent)
   }
 
+  /** Безопасный id из extras: trim, длина 1..64, без ISO-control; иначе null. */
+  private fun sanitizeNavId(value: String?): String? {
+    val trimmed = value?.trim() ?: return null
+    return trimmed.takeIf { it.length in 1..64 && it.none { c -> c.isISOControl() } }
+  }
+
   private fun handleNavIntent(intent: Intent?) {
     val rawTarget = intent?.getStringExtra("multi_elma_nav")?.trim() ?: return
     if (rawTarget.length > 32 || rawTarget !in allowedNavTargets) {
       return
     }
-    val rawAccount = intent.getStringExtra("multi_elma_account")?.trim()
-    val safeAccount = rawAccount?.takeIf { it.length in 1..64 && it.none { c -> c.isISOControl() } }
+    val safeAccount = sanitizeNavId(intent.getStringExtra("multi_elma_account"))
+    val safeApplication = sanitizeNavId(intent.getStringExtra("multi_elma_application"))
+    val safeTask = sanitizeNavId(intent.getStringExtra("multi_elma_task"))
     navHandler.removeCallbacks(navRunnable)
     navAttempt = 0
     navTarget = rawTarget
     navAccountId = safeAccount
+    navApplicationId = safeApplication
+    navTaskId = safeTask
     navRunnable.run()
   }
 }

@@ -1,5 +1,5 @@
 /** Допустимые цели перехода из внешнего deep-link/уведомления. */
-export const ALLOWED_NAV_TARGETS: string[] = ['applications'];
+export const ALLOWED_NAV_TARGETS: string[] = ['applications', 'tasks'];
 
 /** Проверка, что цель перехода разрешена. */
 export function isAllowedNavTarget(target: unknown): boolean {
